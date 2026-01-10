@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
-const FPS: u32 = 15;
+const DEFAULT_FPS: u32 = 30;
 
 // Block size for each bit (larger = more resilient to compression)
 const BLOCK_SIZE: u32 = 4; // 4x4 pixel block per bit
@@ -38,6 +38,9 @@ enum Commands {
         /// The file to compress
         #[arg(long)]
         file: String,
+        /// Frames per second for the output video
+        #[arg(long, default_value_t = DEFAULT_FPS)]
+        fps: u32,
     },
     /// Decompress a video back to the original file
     Decompress {
@@ -54,8 +57,8 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Compress { file } => {
-            if let Err(e) = compress_file(&file) {
+        Commands::Compress { file, fps } => {
+            if let Err(e) = compress_file(&file, fps) {
                 eprintln!("Error compressing file: {}", e);
                 std::process::exit(1);
             }
@@ -69,7 +72,7 @@ fn main() {
     }
 }
 
-fn compress_file(input_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn compress_file(input_path: &str, fps: u32) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(input_path);
     if !path.exists() {
         return Err(format!("File not found: {}", input_path).into());
@@ -94,7 +97,7 @@ fn compress_file(input_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Encoding into {} frames ({}x{} @ {}fps)",
-        num_frames, WIDTH, HEIGHT, FPS
+        num_frames, WIDTH, HEIGHT, fps
     );
     println!(
         "Using black/white encoding with {}x{} pixel blocks",
@@ -131,7 +134,7 @@ fn compress_file(input_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .args([
             "-y",
             "-framerate",
-            &FPS.to_string(),
+            &fps.to_string(),
             "-i",
             frames_dir.join("frame_%06d.png").to_str().unwrap(),
             "-c:v",
@@ -155,8 +158,8 @@ fn compress_file(input_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Successfully created: {}", output_path);
     println!(
         "Video duration: {:.2} seconds ({:.2} minutes)",
-        num_frames as f64 / FPS as f64,
-        num_frames as f64 / FPS as f64 / 60.0
+        num_frames as f64 / fps as f64,
+        num_frames as f64 / fps as f64 / 60.0
     );
 
     Ok(())
