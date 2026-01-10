@@ -3,7 +3,6 @@ use std::process::Command;
 use tempfile::TempDir;
 
 use crate::constants::{BLOCKS_X, BLOCKS_Y, BLOCK_SIZE, BYTES_PER_FRAME, HEIGHT, WIDTH};
-use crate::encryption;
 use crate::zip_utils;
 
 pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -59,8 +58,8 @@ pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&st
         }
     }
 
-    // Extract the header: file size (8 bytes), fps (4 bytes), encryption flag (1 byte)
-    if all_bytes.len() < 13 {
+    // Extract the header: file size (8 bytes), fps (4 bytes)
+    if all_bytes.len() < 12 {
         return Err("Invalid data: not enough bytes for header".into());
     }
 
@@ -70,46 +69,29 @@ pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&st
     let fps_bytes: [u8; 4] = all_bytes[8..12].try_into()?;
     let fps = u32::from_le_bytes(fps_bytes);
 
-    let is_encrypted = all_bytes[12] == 1;
-
     println!("Original data size: {} bytes", original_file_size);
     println!("Original FPS: {}", fps);
-    println!("Encrypted: {}", if is_encrypted { "Yes" } else { "No" });
     println!(
         "Video duration: {:.2} seconds ({:.2} minutes)",
         num_frames as f64 / fps as f64,
         num_frames as f64 / fps as f64 / 60.0
     );
 
-    // Extract the actual data (skip 13 bytes for header)
-    if all_bytes.len() < 13 + original_file_size {
+    // Extract the actual data (skip 12 bytes for header)
+    if all_bytes.len() < 12 + original_file_size {
         return Err(format!(
             "Invalid data: expected {} bytes but only have {}",
             original_file_size,
-            all_bytes.len() - 13
+            all_bytes.len() - 12
         )
         .into());
     }
 
-    let file_data = &all_bytes[13..13 + original_file_size];
+    let zip_data = &all_bytes[12..12 + original_file_size];
 
-    // Step 1: Decrypt if encrypted
-    let zip_data = if is_encrypted {
-        let pwd = password.ok_or("This file is encrypted. Please provide the --password option.")?;
-        println!("Decrypting data with AES-256-GCM...");
-        let decrypted = encryption::decrypt(file_data, pwd)?;
-        println!("Decryption complete: {} bytes", decrypted.len());
-        decrypted
-    } else {
-        if password.is_some() {
-            println!("Warning: Password provided but file is not encrypted. Ignoring password.");
-        }
-        file_data.to_vec()
-    };
-
-    // Step 2: Extract the zip archive
+    // Extract the zip archive (with optional decryption)
     println!("Extracting archive to: {}", output_path);
-    zip_utils::extract_zip(&zip_data, output_path)?;
+    zip_utils::extract_zip(zip_data, output_path, password)?;
 
     println!("Successfully decompressed to: {}", output_path);
 

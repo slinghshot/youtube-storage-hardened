@@ -2,12 +2,13 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 use walkdir::WalkDir;
+use zip::unstable::write::FileOptionsExt;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-/// Creates a zip archive from a file or directory
+/// Creates a zip archive from a file or directory with optional password encryption
 /// Returns the compressed data as bytes
-pub fn create_zip(input_path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn create_zip(input_path: &str, password: Option<&str>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let path = Path::new(input_path);
     if !path.exists() {
         return Err(format!("Path not found: {}", input_path).into());
@@ -16,9 +17,18 @@ pub fn create_zip(input_path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error
     let buffer = Vec::new();
     let mut zip = ZipWriter::new(std::io::Cursor::new(buffer));
 
-    let options = FileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o755);
+    // Create file options with optional encryption
+    let options = if let Some(pwd) = password {
+        println!("Encrypting archive with password...");
+        FileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o755)
+            .with_deprecated_encryption(pwd.as_bytes())
+    } else {
+        FileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o755)
+    };
 
     if path.is_file() {
         // Single file - add it to the zip
@@ -67,11 +77,19 @@ pub fn create_zip(input_path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error
     }
 
     let cursor = zip.finish()?;
-    Ok(cursor.into_inner())
+    let zip_data = cursor.into_inner();
+    
+    if password.is_some() {
+        println!("Archive encrypted: {} bytes", zip_data.len());
+    } else {
+        println!("Archive created: {} bytes", zip_data.len());
+    }
+    
+    Ok(zip_data)
 }
 
-/// Extracts a zip archive to the specified output directory
-pub fn extract_zip(zip_data: &[u8], output_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// Extracts a zip archive to the specified output directory with optional password
+pub fn extract_zip(zip_data: &[u8], output_dir: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let output_path = Path::new(output_dir);
 
     // Create output directory if it doesn't exist
@@ -83,7 +101,16 @@ pub fn extract_zip(zip_data: &[u8], output_dir: &str) -> Result<(), Box<dyn std:
     println!("Extracting {} files from archive...", archive.len());
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
+        let mut file = if let Some(pwd) = password {
+            match archive.by_index_decrypt(i, pwd.as_bytes()) {
+                Ok(Ok(file)) => file,
+                Ok(Err(_)) => return Err("Failed to decrypt: incorrect password".into()),
+                Err(e) => return Err(format!("Failed to read archive: {}", e).into()),
+            }
+        } else {
+            archive.by_index(i)?
+        };
+        
         let outpath = output_path.join(file.mangled_name());
 
         if file.is_dir() {
@@ -120,21 +147,40 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_zip_file() {
+    fn test_zip_file_no_password() {
         let temp_dir = TempDir::new().unwrap();
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "Hello, World!").unwrap();
 
-        let zip_data = create_zip(test_file.to_str().unwrap()).unwrap();
+        let zip_data = create_zip(test_file.to_str().unwrap(), None).unwrap();
         assert!(!zip_data.is_empty());
 
         let extract_dir = temp_dir.path().join("extracted");
-        extract_zip(&zip_data, extract_dir.to_str().unwrap()).unwrap();
+        extract_zip(&zip_data, extract_dir.to_str().unwrap(), None).unwrap();
 
         let extracted_file = extract_dir.join("test.txt");
         assert!(extracted_file.exists());
         let contents = fs::read_to_string(&extracted_file).unwrap();
         assert_eq!(contents, "Hello, World!");
+    }
+
+    #[test]
+    fn test_zip_file_with_password() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("secret.txt");
+        fs::write(&test_file, "Secret data!").unwrap();
+
+        let password = "my_secret_password";
+        let zip_data = create_zip(test_file.to_str().unwrap(), Some(password)).unwrap();
+        assert!(!zip_data.is_empty());
+
+        let extract_dir = temp_dir.path().join("extracted");
+        extract_zip(&zip_data, extract_dir.to_str().unwrap(), Some(password)).unwrap();
+
+        let extracted_file = extract_dir.join("secret.txt");
+        assert!(extracted_file.exists());
+        let contents = fs::read_to_string(&extracted_file).unwrap();
+        assert_eq!(contents, "Secret data!");
     }
 
     #[test]
@@ -145,11 +191,11 @@ mod tests {
         fs::write(test_dir.join("file1.txt"), "File 1").unwrap();
         fs::write(test_dir.join("file2.txt"), "File 2").unwrap();
 
-        let zip_data = create_zip(test_dir.to_str().unwrap()).unwrap();
+        let zip_data = create_zip(test_dir.to_str().unwrap(), None).unwrap();
         assert!(!zip_data.is_empty());
 
         let extract_dir = temp_dir.path().join("extracted");
-        extract_zip(&zip_data, extract_dir.to_str().unwrap()).unwrap();
+        extract_zip(&zip_data, extract_dir.to_str().unwrap(), None).unwrap();
 
         assert!(extract_dir.join("mydir").join("file1.txt").exists());
         assert!(extract_dir.join("mydir").join("file2.txt").exists());

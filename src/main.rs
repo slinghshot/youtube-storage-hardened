@@ -1,7 +1,6 @@
 mod compress;
 mod constants;
 mod decompress;
-mod encryption;
 mod zip_utils;
 
 use clap::{Parser, Subcommand};
@@ -28,7 +27,7 @@ enum Commands {
         /// Frames per second for the output video
         #[arg(long, default_value_t = DEFAULT_FPS)]
         fps: u32,
-        /// Password for encryption (if not provided, data will not be encrypted)
+        /// Password for encryption (like zip -e)
         #[arg(long)]
         password: Option<String>,
     },
@@ -40,7 +39,7 @@ enum Commands {
         /// The output directory path
         #[arg(long)]
         output: String,
-        /// Password for decryption (required if the file was encrypted)
+        /// Password for decryption (required if the archive was encrypted)
         #[arg(long)]
         password: Option<String>,
     },

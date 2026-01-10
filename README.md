@@ -18,28 +18,26 @@ Each frame stores **7,200 bytes** of data at 1280×720 resolution.
 
 ```mermaid
 flowchart TD
-    A[📁 Input File/Directory] --> B[Create ZIP Archive]
-    B --> C{Password Provided?}
-    C -->|Yes| D[🔐 Encrypt with AES-256-GCM]
-    C -->|No| E[Skip Encryption]
-    D --> F[Add Header Metadata]
-    E --> F
-    F --> G[Split Data into Frames]
-    G --> H[Generate Black/White Pixel Blocks]
-    H --> I[Create PNG Frame Images]
-    I --> J[🎬 Encode to MP4 with FFmpeg]
-    J --> K[📹 Output Video File]
+    A[📁 Input File/Directory] --> B{Password Provided?}
+    B -->|Yes| C[🔐 Create Encrypted ZIP Archive]
+    B -->|No| D[Create ZIP Archive]
+    C --> E[Add Header Metadata]
+    D --> E
+    E --> F[Split Data into Frames]
+    F --> G[Generate Black/White Pixel Blocks]
+    G --> H[Create PNG Frame Images]
+    H --> I[🎬 Encode to MP4 with FFmpeg]
+    I --> J[📹 Output Video File]
 
-    subgraph Header["Header (13 bytes)"]
-        F1[File Size: 8 bytes]
-        F2[FPS: 4 bytes]
-        F3[Encrypted Flag: 1 byte]
+    subgraph Header["Header (12 bytes)"]
+        E1[File Size: 8 bytes]
+        E2[FPS: 4 bytes]
     end
 
     subgraph Encoding["Pixel Encoding"]
-        H1[1 bit = 4x4 pixel block]
-        H2[Bit 0 = Black RGB 0,0,0]
-        H3[Bit 1 = White RGB 255,255,255]
+        G1[1 bit = 4x4 pixel block]
+        G2[Bit 0 = Black RGB 0,0,0]
+        G3[Bit 1 = White RGB 255,255,255]
     end
 ```
 
@@ -52,13 +50,11 @@ flowchart TD
     C --> D[Sample Brightness per Block]
     D --> E[Reconstruct Binary Data]
     E --> F[Parse Header Metadata]
-    F --> G{Encrypted?}
-    G -->|Yes| H{Password Provided?}
-    G -->|No| K[Extract ZIP Archive]
-    H -->|Yes| I[🔓 Decrypt with AES-256-GCM]
-    H -->|No| J[❌ Error: Password Required]
-    I --> K
-    K --> L[📁 Output Files/Directory]
+    F --> G{Password Provided?}
+    G -->|Yes| H[🔓 Extract & Decrypt ZIP]
+    G -->|No| I[Extract ZIP Archive]
+    H --> J[📁 Output Files/Directory]
+    I --> J
 
     subgraph Decoding["Pixel Decoding"]
         D1[Sample 5 points per block]
@@ -187,21 +183,22 @@ Works with videos downloaded from YouTube after processing. Files are extracted 
 
 ## Security
 
-### Built-in Encryption
+### Built-in ZIP Encryption
 
-This tool includes **AES-256-GCM** authenticated encryption with **Argon2id** key derivation:
+This tool uses **standard ZIP encryption** (like `zip -e`), making encrypted archives compatible with standard ZIP tools:
 
-- **AES-256-GCM** — Military-grade authenticated encryption
-- **Argon2id** — Memory-hard password hashing (resistant to GPU attacks)
-- **Random salt & nonce** — Each encryption is unique, even with the same password
+- **ZipCrypto encryption** — Standard ZIP password protection
+- **Integrated with compression** — Single-step zip + encrypt
+- **Cross-compatible** — Archives can be extracted with `unzip`, 7-Zip, etc.
 
 When you use the `--password` option:
-1. A random 16-byte salt is generated
-2. Your password is derived into a 256-bit key using Argon2id
-3. Data is encrypted with AES-256-GCM (includes authentication tag)
-4. The encrypted data is then encoded into the video
+1. Files are compressed into a ZIP archive
+2. Each file in the archive is encrypted with your password
+3. The encrypted ZIP is then encoded into the video
 
 **⚠️ Important:** If you lose your password, the data cannot be recovered!
+
+**💡 Tip:** For maximum security with sensitive data, consider pre-encrypting with GPG before compression.
 
 ## Limitations
 

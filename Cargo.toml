@@ -4,15 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aes-gcm = "0.10.3"
-argon2 = "0.5.3"
 clap = { version = "4.5.54", features = ["derive"] }
 image = "0.24"
-rand = "0.9.2"
 tempfile = "3.24.0"
 walkdir = "2.5.0"
 zip = "0.6"
-
-# Pin transitive dependencies to avoid edition2024 incompatibility
-base64ct = "=1.7.3"
-password-hash = "=0.5.0"
