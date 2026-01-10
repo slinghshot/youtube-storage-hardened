@@ -1,6 +1,4 @@
 use image::{ImageBuffer, Rgb};
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -8,25 +6,39 @@ use tempfile::TempDir;
 use crate::constants::{
     BLOCKS_X, BLOCKS_Y, BLOCK_SIZE, BYTES_PER_FRAME, COLOR_BLACK, COLOR_WHITE, HEIGHT, WIDTH,
 };
+use crate::encryption;
+use crate::zip_utils;
 
-pub fn compress_file(input_path: &str, fps: u32) -> Result<(), Box<dyn std::error::Error>> {
+pub fn compress_file(input_path: &str, fps: u32, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(input_path);
     if !path.exists() {
-        return Err(format!("File not found: {}", input_path).into());
+        return Err(format!("Path not found: {}", input_path).into());
     }
 
-    // Read the input file
-    let mut file = File::open(path)?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
+    // Step 1: Create a zip archive from the file or directory
+    println!("Creating zip archive from: {}", input_path);
+    let zip_data = zip_utils::create_zip(input_path)?;
+    println!("Zip archive created: {} bytes", zip_data.len());
+
+    // Step 2: Encrypt the zip data if a password is provided
+    let data = if let Some(pwd) = password {
+        println!("Encrypting data with AES-256-GCM...");
+        let encrypted = encryption::encrypt(&zip_data, pwd)?;
+        println!("Encryption complete: {} bytes", encrypted.len());
+        encrypted
+    } else {
+        println!("No password provided, skipping encryption");
+        zip_data
+    };
 
     let file_size = data.len() as u64;
-    println!("Read {} bytes from {}", file_size, input_path);
+    let is_encrypted: u8 = if password.is_some() { 1 } else { 0 };
 
-    // Prepend the file size (8 bytes) and fps (4 bytes) to the data
-    let mut encoded_data = Vec::with_capacity(12 + data.len());
+    // Prepend the file size (8 bytes), fps (4 bytes), and encryption flag (1 byte) to the data
+    let mut encoded_data = Vec::with_capacity(13 + data.len());
     encoded_data.extend_from_slice(&file_size.to_le_bytes());
     encoded_data.extend_from_slice(&fps.to_le_bytes());
+    encoded_data.push(is_encrypted);
     encoded_data.extend_from_slice(&data);
 
     // Calculate number of frames needed
@@ -99,6 +111,9 @@ pub fn compress_file(input_path: &str, fps: u32) -> Result<(), Box<dyn std::erro
         num_frames as f64 / fps as f64,
         num_frames as f64 / fps as f64 / 60.0
     );
+    if password.is_some() {
+        println!("Note: The video is encrypted. You will need the same password to decompress.");
+    }
 
     Ok(())
 }
