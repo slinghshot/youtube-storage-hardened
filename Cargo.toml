@@ -7,3 +7,5 @@ edition = "2021"
 clap = { version = "4.5.54", features = ["derive"] }
 image = "0.24"
 tempfile = "3.24.0"
+walkdir = "2.5.0"
+zip = "0.6"

@@ -12,6 +12,79 @@ YouTube re-encodes all uploaded videos with lossy compression, which normally co
 
 Each frame stores **7,200 bytes** of data at 1280×720 resolution.
 
+## Process Flow
+
+### Compression Process
+
+```mermaid
+flowchart TD
+    A[📁 Input File/Directory] --> B{Password Provided?}
+    B -->|Yes| C[🔐 Create Encrypted ZIP Archive]
+    B -->|No| D[Create ZIP Archive]
+    C --> E[Add Header Metadata]
+    D --> E
+    E --> F[Split Data into Frames]
+    F --> G[Generate Black/White Pixel Blocks]
+    G --> H[Create PNG Frame Images]
+    H --> I[🎬 Encode to MP4 with FFmpeg]
+    I --> J[📹 Output Video File]
+
+    subgraph Header["Header (12 bytes)"]
+        E1[File Size: 8 bytes]
+        E2[FPS: 4 bytes]
+    end
+
+    subgraph Encoding["Pixel Encoding"]
+        G1[1 bit = 4x4 pixel block]
+        G2[Bit 0 = Black RGB 0,0,0]
+        G3[Bit 1 = White RGB 255,255,255]
+    end
+```
+
+### Decompression Process
+
+```mermaid
+flowchart TD
+    A[📹 Input Video File] --> B[🎬 Extract Frames with FFmpeg]
+    B --> C[Read Pixel Blocks from Frames]
+    C --> D[Sample Brightness per Block]
+    D --> E[Reconstruct Binary Data]
+    E --> F[Parse Header Metadata]
+    F --> G{Password Provided?}
+    G -->|Yes| H[🔓 Extract & Decrypt ZIP]
+    G -->|No| I[Extract ZIP Archive]
+    H --> J[📁 Output Files/Directory]
+    I --> J
+
+    subgraph Decoding["Pixel Decoding"]
+        D1[Sample 5 points per block]
+        D2[Average brightness]
+        D3["> 128 = 1, else = 0"]
+    end
+```
+
+### End-to-End Workflow
+
+```mermaid
+flowchart LR
+    subgraph Local["Local Machine"]
+        A[📁 Files] --> B[Compress + Encrypt]
+        B --> C[📹 Video]
+    end
+
+    subgraph Cloud["YouTube Cloud"]
+        D[(YouTube Storage)]
+    end
+
+    subgraph Recovery["Recovery"]
+        E[📹 Downloaded Video] --> F[Decompress + Decrypt]
+        F --> G[📁 Restored Files]
+    end
+
+    C -->|Upload| D
+    D -->|Download| E
+```
+
 ## Installation
 
 ### Prerequisites
@@ -28,42 +101,56 @@ The binary will be at `./target/release/youtube-storage`
 
 ## Usage
 
-### Compress (Encode file → Video)
+### Compress (Encode file/directory → Video)
 
+**Compress a file:**
 ```bash
 youtube-storage compress --file mydata.zip
 ```
 
-Creates `mydata.mp4` ready for YouTube upload.
-
-### Decompress (Video → Original file)
-
+**Compress a directory:**
 ```bash
-youtube-storage decompress --file downloaded.mp4 --output recovered.zip
+youtube-storage compress --file ./my-folder
 ```
 
-Works with videos downloaded from YouTube after processing.
+**Compress with encryption:**
+```bash
+youtube-storage compress --file mydata.zip --password "your-secret-password"
+```
+
+Creates `mydata.mp4` (or `my-folder.mp4`) ready for YouTube upload.
+
+### Decompress (Video → Original file/directory)
+
+**Decompress without encryption:**
+```bash
+youtube-storage decompress --file downloaded.mp4 --output ./restored
+```
+
+**Decompress with decryption:**
+```bash
+youtube-storage decompress --file downloaded.mp4 --output ./restored --password "your-secret-password"
+```
+
+Works with videos downloaded from YouTube after processing. Files are extracted to the specified output directory.
 
 ## Example Workflow
 
-1. **Encode your file:**
+1. **Encode your files with encryption:**
    ```bash
-   ./target/release/youtube-storage compress --file backup.zip
+   ./target/release/youtube-storage compress --file ./my-documents --password "my-secure-pass"
    ```
 
-2. **Upload `backup.mp4` to YouTube** (unlisted recommended)
+2. **Upload `my-documents.mp4` to YouTube** (unlisted recommended)
 
 3. **When needed, download the video from YouTube**
 
-4. **Decode back to original:**
+4. **Decode and decrypt back to original:**
    ```bash
-   ./target/release/youtube-storage decompress --file backup.mp4 --output backup.zip
+   ./target/release/youtube-storage decompress --file my-documents.mp4 --output ./restored --password "my-secure-pass"
    ```
 
-5. **Verify integrity:**
-   ```bash
-   md5 original.zip recovered.zip  # Should match!
-   ```
+5. **Verify your files are intact in `./restored/my-documents/`**
 
 ## Technical Specifications
 
@@ -94,19 +181,38 @@ Works with videos downloaded from YouTube after processing.
 4. **Multi-point sampling** — Decoder samples 5 points per block and averages
 5. **Brightness threshold** — Even if white becomes gray (200,200,200), it's still >128
 
+## Security
+
+### Built-in ZIP Encryption
+
+This tool uses **standard ZIP encryption** (like `zip -e`), making encrypted archives compatible with standard ZIP tools:
+
+- **ZipCrypto encryption** — Standard ZIP password protection
+- **Integrated with compression** — Single-step zip + encrypt
+- **Cross-compatible** — Archives can be extracted with `unzip`, 7-Zip, etc.
+
+When you use the `--password` option:
+1. Files are compressed into a ZIP archive
+2. Each file in the archive is encrypted with your password
+3. The encrypted ZIP is then encoded into the video
+
+**⚠️ Important:** If you lose your password, the data cannot be recovered!
+
+**💡 Tip:** For maximum security with sensitive data, consider pre-encrypting with GPG before compression.
+
 ## Limitations
 
 - **Video length** — Large files create long videos (224 MB ≈ 36 minutes)
 - **Processing time** — Encoding/decoding takes time for large files
 - **YouTube limits** — Videos over 15 minutes require account verification
-- **Not encrypted** — Data is visible as patterns; encrypt sensitive files first
+- **Password recovery** — No way to recover encrypted data without the password
 
 ## Tips
 
-- **Encrypt first** — Use `gpg` or `zip -e` for sensitive data
+- **Always use encryption** — Use `--password` for any sensitive data
 - **Use unlisted** — Keep videos unlisted to avoid attention
 - **Download highest quality** — Always download the highest resolution available
-- **Verify checksums** — Always verify MD5/SHA256 after recovery
+- **Save your password securely** — Use a password manager
 
 ## License
 

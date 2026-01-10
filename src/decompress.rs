@@ -1,12 +1,11 @@
-use std::fs::File;
-use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
 use crate::constants::{BLOCKS_X, BLOCKS_Y, BLOCK_SIZE, BYTES_PER_FRAME, HEIGHT, WIDTH};
+use crate::zip_utils;
 
-pub fn decompress_file(input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(input_path);
     if !path.exists() {
         return Err(format!("Video file not found: {}", input_path).into());
@@ -59,19 +58,18 @@ pub fn decompress_file(input_path: &str, output_path: &str) -> Result<(), Box<dy
         }
     }
 
-    // Extract the original file size from the first 8 bytes
+    // Extract the header: file size (8 bytes), fps (4 bytes)
     if all_bytes.len() < 12 {
-        return Err("Invalid data: not enough bytes for file size and fps header".into());
+        return Err("Invalid data: not enough bytes for header".into());
     }
 
     let file_size_bytes: [u8; 8] = all_bytes[0..8].try_into()?;
     let original_file_size = u64::from_le_bytes(file_size_bytes) as usize;
 
-    // Extract the FPS from bytes 8-12 (stored during compression)
     let fps_bytes: [u8; 4] = all_bytes[8..12].try_into()?;
     let fps = u32::from_le_bytes(fps_bytes);
 
-    println!("Original file size: {} bytes", original_file_size);
+    println!("Original data size: {} bytes", original_file_size);
     println!("Original FPS: {}", fps);
     println!(
         "Video duration: {:.2} seconds ({:.2} minutes)",
@@ -79,7 +77,7 @@ pub fn decompress_file(input_path: &str, output_path: &str) -> Result<(), Box<dy
         num_frames as f64 / fps as f64 / 60.0
     );
 
-    // Extract the actual file data (skip 8 bytes for size + 4 bytes for fps)
+    // Extract the actual data (skip 12 bytes for header)
     if all_bytes.len() < 12 + original_file_size {
         return Err(format!(
             "Invalid data: expected {} bytes but only have {}",
@@ -89,14 +87,13 @@ pub fn decompress_file(input_path: &str, output_path: &str) -> Result<(), Box<dy
         .into());
     }
 
-    let file_data = &all_bytes[12..12 + original_file_size];
+    let zip_data = &all_bytes[12..12 + original_file_size];
 
-    // Write to output file
-    let mut output_file = File::create(output_path)?;
-    output_file.write_all(file_data)?;
+    // Extract the zip archive (with optional decryption)
+    println!("Extracting archive to: {}", output_path);
+    zip_utils::extract_zip(zip_data, output_path, password)?;
 
     println!("Successfully decompressed to: {}", output_path);
-    println!("Output file size: {} bytes", original_file_size);
 
     Ok(())
 }
