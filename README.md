@@ -85,6 +85,24 @@ flowchart LR
     D -->|Download| E
 ```
 
+### Estimated Video Lengths
+
+**At 30 fps (default):**
+
+| File Size | Video Duration | Frames |
+|-----------|----------------|--------|
+| 1 GB | ~1.3 hours | 138,889 |
+| 5 GB | ~6.5 hours | 694,444 |
+| 10 GB | ~13 hours | 1,388,889 |
+
+**At 15 fps:**
+
+| File Size | Video Duration | Frames |
+|-----------|----------------|--------|
+| 1 GB | ~2.5 hours | 138,889 |
+| 5 GB | ~13 hours | 694,444 |
+| 10 GB | ~26 hours | 1,388,889 |
+
 ## Installation
 
 ### Prerequisites
@@ -157,7 +175,7 @@ Works with videos downloaded from YouTube after processing. Files are extracted 
 | Parameter | Value |
 |-----------|-------|
 | Resolution | 1280×720 (720p) |
-| Frame Rate | 15 fps |
+| Frame Rate | 30 fps |
 | Block Size | 4×4 pixels per bit |
 | Bits per Frame | 57,600 |
 | Bytes per Frame | 7,200 |
@@ -168,10 +186,10 @@ Works with videos downloaded from YouTube after processing. Files are extracted 
 
 | File Size | Video Duration | Frames |
 |-----------|----------------|--------|
-| 1 MB | ~9 seconds | 139 |
-| 10 MB | ~1.5 minutes | 1,389 |
-| 100 MB | ~15 minutes | 13,889 |
-| 1 GB | ~2.5 hours | 138,889 |
+| 1 MB | ~5 seconds | 139 |
+| 10 MB | ~46 seconds | 1,389 |
+| 100 MB | ~8 minutes | 13,889 |
+| 1 GB | ~1.3 hours | 138,889 |
 
 ### Why It Survives YouTube
 
