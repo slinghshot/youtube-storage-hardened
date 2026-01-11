@@ -1,9 +1,13 @@
+use rayon::prelude::*;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 
 use crate::constants::{BLOCKS_X, BLOCKS_Y, BLOCK_SIZE, BYTES_PER_FRAME, HEIGHT, WIDTH};
 use crate::zip_utils;
+
+type FrameResult = Result<(usize, Vec<u8>), Box<dyn std::error::Error + Send + Sync>>;
 
 pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(input_path);
@@ -45,17 +49,38 @@ pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&st
     let num_frames = frame_files.len();
     println!("Extracted {} frames", num_frames);
 
-    // Read all frames and extract bytes
-    let mut all_bytes: Vec<u8> = Vec::new();
+    // Read all frames and extract bytes in parallel using rayon
+    let frames_processed = AtomicUsize::new(0);
+    let frame_results: Vec<FrameResult> =
+        frame_files
+            .par_iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                let frame_path = entry.path();
+                let bytes = extract_bytes_from_frame(&frame_path)?;
 
-    for (idx, entry) in frame_files.iter().enumerate() {
-        let frame_path = entry.path();
-        let bytes = extract_bytes_from_frame(&frame_path)?;
-        all_bytes.extend_from_slice(&bytes);
+                let count = frames_processed.fetch_add(1, Ordering::Relaxed) + 1;
+                if count % 100 == 0 || count == num_frames {
+                    println!("Processed frame {}/{}", count, num_frames);
+                }
 
-        if (idx + 1) % 100 == 0 || idx == num_frames - 1 {
-            println!("Processed frame {}/{}", idx + 1, num_frames);
+                Ok((idx, bytes))
+            })
+            .collect();
+
+    // Sort results by frame index and combine bytes
+    let mut indexed_results: Vec<(usize, Vec<u8>)> = Vec::with_capacity(num_frames);
+    for result in frame_results {
+        match result {
+            Ok(r) => indexed_results.push(r),
+            Err(e) => return Err(e.to_string().into()),
         }
+    }
+    indexed_results.sort_by_key(|(idx, _)| *idx);
+
+    let mut all_bytes: Vec<u8> = Vec::with_capacity(num_frames * BYTES_PER_FRAME);
+    for (_, bytes) in indexed_results {
+        all_bytes.extend_from_slice(&bytes);
     }
 
     // Extract the header: file size (8 bytes), fps (4 bytes)
@@ -98,7 +123,7 @@ pub fn decompress_file(input_path: &str, output_path: &str, password: Option<&st
     Ok(())
 }
 
-fn extract_bytes_from_frame(frame_path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn extract_bytes_from_frame(frame_path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let img = image::open(frame_path)?.to_rgb8();
 
     let mut bytes = Vec::with_capacity(BYTES_PER_FRAME);

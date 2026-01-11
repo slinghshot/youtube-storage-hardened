@@ -1,11 +1,12 @@
 [package]
 name = "youtube-storage"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
 image = "0.24"
+rayon = "1.10"
 tempfile = "3.24.0"
 walkdir = "2.5.0"
 zip = "0.6"

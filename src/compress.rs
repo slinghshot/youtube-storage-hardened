@@ -1,6 +1,8 @@
 use image::{ImageBuffer, Rgb};
+use rayon::prelude::*;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 
 use crate::constants::{
@@ -44,18 +46,32 @@ pub fn compress_file(input_path: &str, fps: u32, password: Option<&str>) -> Resu
     let temp_dir = TempDir::new()?;
     let frames_dir = temp_dir.path();
 
-    // Generate frames
-    for frame_idx in 0..num_frames {
-        let start_byte = frame_idx * BYTES_PER_FRAME;
-        let end_byte = std::cmp::min(start_byte + BYTES_PER_FRAME, total_bytes);
-        let frame_data = &encoded_data[start_byte..end_byte];
+    // Generate frames in parallel using rayon
+    let frames_generated = AtomicUsize::new(0);
+    let results: Vec<Result<(), Box<dyn std::error::Error + Send + Sync>>> = (0..num_frames)
+        .into_par_iter()
+        .map(|frame_idx| {
+            let start_byte = frame_idx * BYTES_PER_FRAME;
+            let end_byte = std::cmp::min(start_byte + BYTES_PER_FRAME, total_bytes);
+            let frame_data = &encoded_data[start_byte..end_byte];
 
-        let img = create_frame_from_bytes(frame_data);
-        let frame_path = frames_dir.join(format!("frame_{:06}.png", frame_idx));
-        img.save(&frame_path)?;
+            let img = create_frame_from_bytes(frame_data);
+            let frame_path = frames_dir.join(format!("frame_{:06}.png", frame_idx));
+            img.save(&frame_path)?;
 
-        if (frame_idx + 1) % 100 == 0 || frame_idx == num_frames - 1 {
-            println!("Generated frame {}/{}", frame_idx + 1, num_frames);
+            let count = frames_generated.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 100 == 0 || count == num_frames {
+                println!("Generated frame {}/{}", count, num_frames);
+            }
+
+            Ok(())
+        })
+        .collect();
+
+    // Check for any errors during parallel processing
+    for result in results {
+        if let Err(e) = result {
+            return Err(e.to_string().into());
         }
     }
 
