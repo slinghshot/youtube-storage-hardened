@@ -881,6 +881,7 @@ version = "0.2.1"
 dependencies = [
  "clap",
  "image",
+ "rayon",
  "tempfile",
  "walkdir",
  "zip",
