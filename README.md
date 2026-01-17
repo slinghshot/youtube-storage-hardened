@@ -237,5 +237,5 @@ When you use the `--password` option:
 MIT
 
 ## Disclaimer
-
-This tool is for educational purposes. Review YouTube's Terms of Service before using for storage. The authors are not responsible for any account actions or data loss.
+> [!WARNING]  
+> This tool is for educational purposes. Review YouTube's Terms of Service before using for storage. The authors are not responsible for any account actions or data loss.
