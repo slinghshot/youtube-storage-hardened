@@ -1,141 +1,162 @@
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::path::Path;
+use crate::{constants::*, Result};
+use cap_std::{ambient_authority, fs::Dir};
+use std::{
+    fs,
+    io::{self, Cursor, Read},
+    path::{Path, PathBuf},
+};
 use walkdir::WalkDir;
-use zip::unstable::write::FileOptionsExt;
-use zip::write::FileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
-/// Creates a zip archive from a file or directory with optional password encryption
-/// Returns the compressed data as bytes
-pub fn create_zip(input_path: &str, password: Option<&str>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let path = Path::new(input_path);
-    if !path.exists() {
-        return Err(format!("Path not found: {}", input_path).into());
+fn portable_name(name: &str) -> Result<()> {
+    let parts: Vec<_> = name.strip_suffix('/').unwrap_or(name).split('/').collect();
+    if name.len() > 4096 || parts.len() > 64 {
+        return Err("Archive path too long".into());
     }
-
-    let buffer = Vec::new();
-    let mut zip = ZipWriter::new(std::io::Cursor::new(buffer));
-
-    // Create file options with optional encryption
-    let options = if let Some(pwd) = password {
-        println!("Encrypting archive with password...");
-        FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .unix_permissions(0o755)
-            .with_deprecated_encryption(pwd.as_bytes())
-    } else {
-        FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .unix_permissions(0o755)
-    };
-
-    if path.is_file() {
-        // Single file - add it to the zip
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        zip.start_file(file_name.to_string(), options)?;
-
-        let mut file = File::open(path)?;
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents)?;
-        zip.write_all(&contents)?;
-
-        println!("Added file to archive: {}", file_name);
-    } else if path.is_dir() {
-        // Directory - recursively add all files
-        let base_path = path.parent().unwrap_or(path);
-
-        for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-            let entry_path = entry.path();
-            let relative_path = entry_path
-                .strip_prefix(base_path)
-                .unwrap_or(entry_path)
-                .to_string_lossy()
-                .to_string();
-
-            if entry_path.is_file() {
-                zip.start_file(&relative_path, options)?;
-
-                let mut file = File::open(entry_path)?;
-                let mut contents = Vec::new();
-                file.read_to_end(&mut contents)?;
-                zip.write_all(&contents)?;
-
-                println!("Added to archive: {}", relative_path);
-            } else if entry_path.is_dir() && entry_path != path {
-                // Add directory entry
-                let dir_name = if relative_path.ends_with('/') {
-                    relative_path.clone()
-                } else {
-                    format!("{}/", relative_path)
-                };
-                zip.add_directory(&dir_name, options)?;
-            }
+    for part in parts {
+        let stem = part
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim_end()
+            .to_ascii_uppercase();
+        if part.is_empty()
+            || part.ends_with(['.', ' '])
+            || part.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+            || part.chars().any(char::is_control)
+            || matches!(
+                stem.as_str(),
+                "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+            )
+            || ["COM", "LPT"].iter().any(|prefix| {
+                stem.strip_prefix(prefix).is_some_and(|s| {
+                    s.len() == 1 && s.as_bytes()[0].is_ascii_digit() || matches!(s, "¹" | "²" | "³")
+                })
+            })
+        {
+            return Err("Unsafe archive path".into());
         }
-    } else {
-        return Err(format!("Unsupported path type: {}", input_path).into());
     }
-
-    let cursor = zip.finish()?;
-    let zip_data = cursor.into_inner();
-    
-    if password.is_some() {
-        println!("Archive encrypted: {} bytes", zip_data.len());
-    } else {
-        println!("Archive created: {} bytes", zip_data.len());
-    }
-    
-    Ok(zip_data)
+    Ok(())
 }
 
-/// Extracts a zip archive to the specified output directory with optional password
-pub fn extract_zip(zip_data: &[u8], output_dir: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let output_path = Path::new(output_dir);
-
-    // Create output directory if it doesn't exist
-    fs::create_dir_all(output_path)?;
-
-    let cursor = std::io::Cursor::new(zip_data);
-    let mut archive = ZipArchive::new(cursor)?;
-
-    println!("Extracting {} files from archive...", archive.len());
-
-    for i in 0..archive.len() {
-        let mut file = if let Some(pwd) = password {
-            match archive.by_index_decrypt(i, pwd.as_bytes()) {
-                Ok(Ok(file)) => file,
-                Ok(Err(_)) => return Err("Failed to decrypt: incorrect password".into()),
-                Err(e) => return Err(format!("Failed to read archive: {}", e).into()),
-            }
-        } else {
-            archive.by_index(i)?
-        };
-        
-        let outpath = output_path.join(file.mangled_name());
-
-        if file.is_dir() {
-            fs::create_dir_all(&outpath)?;
-        } else {
-            if let Some(parent) = outpath.parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent)?;
-                }
-            }
-
-            let mut outfile = File::create(&outpath)?;
-            std::io::copy(&mut file, &mut outfile)?;
-
-            // Set permissions on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Some(mode) = file.unix_mode() {
-                    fs::set_permissions(&outpath, fs::Permissions::from_mode(mode))?;
-                }
-            }
-
-            println!("Extracted: {}", outpath.display());
+pub fn create_zip(input: &Path) -> Result<Vec<u8>> {
+    let meta = input.symlink_metadata()?;
+    if !(meta.is_dir() || meta.is_file()) {
+        return Err("Expected a regular file or directory".into());
+    }
+    let absolute = input.canonicalize()?;
+    let parent = absolute
+        .parent()
+        .ok_or("Select a file or folder below the filesystem root")?;
+    let root = Dir::open_ambient_dir(
+        if meta.is_dir() { &absolute } else { parent },
+        ambient_authority(),
+    )?;
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o600);
+    let mut remaining = MAX_EXPANDED;
+    for (i, item) in WalkDir::new(&absolute)
+        .follow_root_links(false)
+        .into_iter()
+        .enumerate()
+    {
+        if i >= MAX_ENTRIES {
+            return Err("Too many archive entries".into());
         }
+        let entry = item?;
+        let relative = entry.path().strip_prefix(parent)?;
+        let name = relative
+            .to_str()
+            .ok_or("Expected UTF-8 filename")?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        portable_name(&name)?;
+        if entry.file_type().is_dir() {
+            writer.add_directory(name, options)?;
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            return Err("Backup contains a link or special file".into());
+        }
+        let scoped = if meta.is_dir() {
+            entry.path().strip_prefix(&absolute)?
+        } else {
+            relative
+        };
+        let file = root.open(scoped)?;
+        if !file.metadata()?.is_file() {
+            return Err("Expected regular file".into());
+        }
+        writer.start_file(name, options)?;
+        let copied = io::copy(&mut file.take(remaining + 1), &mut writer)?;
+        remaining = remaining
+            .checked_sub(copied)
+            .ok_or("Input exceeds 256 MiB")?;
+    }
+    Ok(writer.finish()?.into_inner())
+}
+
+pub fn restore(data: &[u8], output: &Path, password: Option<&str>) -> Result<()> {
+    let archive = ZipArchive::new(Cursor::new(data))?;
+    if archive.len() > MAX_ENTRIES {
+        return Err("Too many archive entries".into());
+    }
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(output)?;
+    // Own only the newly created directory. Roll it back on any extraction error.
+    if let Err(error) = extract_entries(archive, output, password) {
+        fs::remove_dir_all(output)?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn extract_entries(
+    mut archive: ZipArchive<Cursor<&[u8]>>,
+    output: &Path,
+    password: Option<&str>,
+) -> Result<()> {
+    let mut remaining = MAX_EXPANDED;
+    for i in 0..archive.len() {
+        let mut entry = match password {
+            Some(s) => archive.by_index_decrypt(i, s.as_bytes())?,
+            None => archive.by_index(i)?,
+        };
+        portable_name(&entry.name()?)?;
+        let path: PathBuf = output.join(entry.enclosed_name().ok_or("Unsafe ZIP path")?);
+        if entry.is_symlink() {
+            return Err("Links are unsupported".into());
+        }
+        if entry.is_dir() {
+            fs::create_dir_all(path)?;
+            continue;
+        }
+        fs::create_dir_all(path.parent().ok_or("Invalid ZIP entry")?)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        if entry.size() > remaining {
+            return Err("Expanded backup exceeds limit".into());
+        }
+        let mut target = options.open(path)?;
+        let copied = io::copy(&mut entry.by_ref().take(remaining + 1), &mut target)?;
+        if copied != entry.size() {
+            return Err("ZIP size mismatch".into());
+        }
+        remaining = remaining
+            .checked_sub(copied)
+            .ok_or("Expanded backup exceeds limit")?;
     }
 
     Ok(())
@@ -144,60 +165,35 @@ pub fn extract_zip(zip_data: &[u8], output_dir: &str, password: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-
     #[test]
-    fn test_zip_file_no_password() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_file = temp_dir.path().join("test.txt");
-        fs::write(&test_file, "Hello, World!").unwrap();
+    fn restores_in_a_new_directory_only() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source");
+        fs::create_dir(&source)?;
+        fs::write(source.join("notes"), b"test")?;
+        let archive = create_zip(&source)?;
+        let out = temp.path().join("restore");
+        restore(&archive, &out, None)?;
+        assert_eq!(fs::read(out.join("source/notes"))?, b"test");
+        assert!(restore(&archive, &out, None).is_err());
+        Ok(())
+    }
 
-        let zip_data = create_zip(test_file.to_str().unwrap(), None).unwrap();
-        assert!(!zip_data.is_empty());
-
-        let extract_dir = temp_dir.path().join("extracted");
-        extract_zip(&zip_data, extract_dir.to_str().unwrap(), None).unwrap();
-
-        let extracted_file = extract_dir.join("test.txt");
-        assert!(extracted_file.exists());
-        let contents = fs::read_to_string(&extracted_file).unwrap();
-        assert_eq!(contents, "Hello, World!");
+    #[cfg(unix)]
+    #[test]
+    fn refuses_links_in_backup() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        fs::write(temp.path().join("real"), b"test")?;
+        std::os::unix::fs::symlink("real", temp.path().join("alias"))?;
+        assert!(create_zip(temp.path()).is_err());
+        Ok(())
     }
 
     #[test]
-    fn test_zip_file_with_password() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_file = temp_dir.path().join("secret.txt");
-        fs::write(&test_file, "Secret data!").unwrap();
-
-        let password = "my_secret_password";
-        let zip_data = create_zip(test_file.to_str().unwrap(), Some(password)).unwrap();
-        assert!(!zip_data.is_empty());
-
-        let extract_dir = temp_dir.path().join("extracted");
-        extract_zip(&zip_data, extract_dir.to_str().unwrap(), Some(password)).unwrap();
-
-        let extracted_file = extract_dir.join("secret.txt");
-        assert!(extracted_file.exists());
-        let contents = fs::read_to_string(&extracted_file).unwrap();
-        assert_eq!(contents, "Secret data!");
-    }
-
-    #[test]
-    fn test_zip_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_dir = temp_dir.path().join("mydir");
-        fs::create_dir(&test_dir).unwrap();
-        fs::write(test_dir.join("file1.txt"), "File 1").unwrap();
-        fs::write(test_dir.join("file2.txt"), "File 2").unwrap();
-
-        let zip_data = create_zip(test_dir.to_str().unwrap(), None).unwrap();
-        assert!(!zip_data.is_empty());
-
-        let extract_dir = temp_dir.path().join("extracted");
-        extract_zip(&zip_data, extract_dir.to_str().unwrap(), None).unwrap();
-
-        assert!(extract_dir.join("mydir").join("file1.txt").exists());
-        assert!(extract_dir.join("mydir").join("file2.txt").exists());
+    fn validates_portable_archive_names() {
+        for name in ["../notes", "CON.txt", "/notes", "dir/file:stream", "file."] {
+            assert!(portable_name(name).is_err());
+        }
+        assert!(portable_name("folder/notes.txt").is_ok());
     }
 }
