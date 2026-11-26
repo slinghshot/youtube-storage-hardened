@@ -7,47 +7,84 @@ use std::{
 
 pub fn encode(
     file: &Path,
+    destination: Option<&Path>,
+    audio: Option<&Path>,
     fps: u32,
     size: u64,
     write_payload: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<()> {
-    size.checked_add(12).ok_or("Video payload too large")?;
+    let total = size.checked_add(12).ok_or("Video payload too large")?;
     let canonical = file.canonicalize()?;
     let mut stem = canonical.file_stem().ok_or("Missing filename")?.to_owned();
     stem.push(".mp4");
-    let output = std::path::PathBuf::from(stem);
+    let output = destination.unwrap_or(Path::new(&stem));
     if output.try_exists()? {
         return Err("Output video already exists".into());
     }
-    let temp = tempfile::NamedTempFile::new_in(".")?;
-    let mut child = Command::new("ffmpeg")
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let temp = tempfile::NamedTempFile::new_in(parent)?;
+    let mut ffmpeg = Command::new("ffmpeg");
+    ffmpeg.args([
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-protocol_whitelist",
+        "pipe",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "gray",
+        "-video_size",
+        "1280x720",
+        "-framerate",
+        &fps.to_string(),
+        "-i",
+        "pipe:0",
+    ]);
+    if let Some(audio) = audio {
+        if !audio.symlink_metadata()?.is_file() {
+            return Err("Soundtrack must be a local regular file".into());
+        }
+        let duration = total.div_ceil(FRAME_BYTES as u64) as f64 / f64::from(fps);
+        ffmpeg
+            .args([
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                "wav,mp3,flac,mov,aac,ogg",
+                "-stream_loop",
+                "-1",
+                "-i",
+            ])
+            .arg(audio.canonicalize()?)
+            .args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-c:a",
+                "aac",
+                "-ac",
+                "2",
+                "-ar",
+                "48000",
+                "-b:a",
+                "128k",
+                "-af",
+                &format!("atrim=duration={duration:.9}"),
+            ]);
+    }
+    let mut child = ffmpeg
         .args([
-            "-nostdin",
-            "-v",
-            "error",
-            "-y",
-            "-protocol_whitelist",
-            "pipe",
-            "-f",
-            "rawvideo",
-            "-pixel_format",
-            "gray",
-            "-video_size",
-            "1280x720",
-            "-framerate",
-            &fps.to_string(),
-            "-i",
-            "pipe:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "slow",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
-            "-f",
-            "mp4",
+            "-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-f", "mp4",
         ])
         .arg(temp.path().canonicalize()?)
         .stdin(Stdio::piped())
@@ -77,7 +114,7 @@ pub fn encode(
     if !status.success() {
         return Err("FFmpeg encoding failed".into());
     }
-    temp.persist_noclobber(&output)?;
+    temp.persist_noclobber(output)?;
     println!("Created {}", output.display());
     Ok(())
 }

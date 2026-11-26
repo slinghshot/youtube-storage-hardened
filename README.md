@@ -10,12 +10,26 @@ Install Rust 1.95 and FFmpeg with the libx264 encoder. Use a current FFmpeg inst
 cargo build --release --locked
 ```
 
+## Desktop interface
+
+Open the built executable with no arguments to launch the desktop interface. The GUI requires Python 3 with Tk (`python3` on macOS/Linux or `pythonw` on Windows) and FFmpeg on PATH. CLI commands require only the binary and FFmpeg at runtime.
+
+In **Create backup**, choose a file or folder, the output MP4, and optionally a local soundtrack. Enter and confirm your passphrase, then select **Create backup**. In **Restore backup**, choose the video and the parent directory for the new restore folder. You can edit the suggested folder name before selecting **Restore files**. The GUI supports passphrase-encrypted backups. Use the CLI for legacy ZIP recovery or custom restore limits.
+
 ## Create and restore a backup
 
 ```sh
 youtube-storage compress --file ./documents
 youtube-storage decompress --file ./documents.mp4 --output ./restored
 ```
+
+To select a destination and include a soundtrack, use:
+
+```sh
+youtube-storage compress --file ./documents --audio ./narration.wav --output ./videos/backup.mp4
+```
+
+The soundtrack is audible to anyone who can play the video, without the backup passphrase. FFmpeg loops or trims it to the video duration and encodes it as AAC. WAV, MP3, FLAC, M4A, AAC and Ogg inputs are supported. Omit `--audio` for a video-only backup.
 
 Compression prompts for a passphrase twice on the terminal. It encrypts the complete ZIP, including entry names, using Argon2id with a fresh random salt and chunked AES-256-GCM. The authentication tags bind each chunk to its position and the complete payload length. Keep the passphrase in a password manager. Restore verifies authentication before creating output files. The MP4 basename, video length, and approximate backup size remain visible. Compression refuses to overwrite an existing video.
 
