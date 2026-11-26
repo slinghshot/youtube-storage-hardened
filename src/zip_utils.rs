@@ -1,8 +1,8 @@
 use crate::{constants::*, Result};
 use cap_std::{ambient_authority, fs::Dir};
 use std::{
-    fs,
-    io::{self, Cursor, Read},
+    fs::{self, File},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
@@ -40,7 +40,7 @@ fn portable_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn create_zip(input: &Path) -> Result<Vec<u8>> {
+pub fn create_zip(input: &Path) -> Result<File> {
     let meta = input.symlink_metadata()?;
     if !(meta.is_dir() || meta.is_file()) {
         return Err("Expected a regular file or directory".into());
@@ -53,11 +53,10 @@ pub fn create_zip(input: &Path) -> Result<Vec<u8>> {
         if meta.is_dir() { &absolute } else { parent },
         ambient_authority(),
     )?;
-    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let mut writer = ZipWriter::new(tempfile::tempfile()?);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o600);
-    let mut remaining = MAX_EXPANDED;
     for (i, item) in WalkDir::new(&absolute)
         .follow_root_links(false)
         .into_iter()
@@ -89,17 +88,27 @@ pub fn create_zip(input: &Path) -> Result<Vec<u8>> {
         if !file.metadata()?.is_file() {
             return Err("Expected regular file".into());
         }
-        writer.start_file(name, options)?;
-        let copied = io::copy(&mut file.take(remaining + 1), &mut writer)?;
-        remaining = remaining
-            .checked_sub(copied)
-            .ok_or("Input exceeds 256 MiB")?;
+        writer.start_file(name, options.large_file(true))?;
+        io::copy(&mut &file, &mut writer)?;
     }
-    Ok(writer.finish()?.into_inner())
+    let mut file = writer.finish()?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(file)
 }
 
-pub fn restore(data: &[u8], output: &Path, password: Option<&str>) -> Result<()> {
-    let archive = ZipArchive::new(Cursor::new(data))?;
+pub fn restore(
+    mut data: impl Read + Seek,
+    output: &Path,
+    password: Option<&str>,
+    max_bytes: u64,
+) -> Result<()> {
+    // Read the count before ZipArchive builds its in-memory directory index.
+    if zip::unstable::read::ZipIterable::try_new(&mut data, Default::default())?.len() > MAX_ENTRIES
+    {
+        return Err("Too many archive entries".into());
+    }
+    data.rewind()?;
+    let archive = ZipArchive::new(data)?;
     if archive.len() > MAX_ENTRIES {
         return Err("Too many archive entries".into());
     }
@@ -111,7 +120,7 @@ pub fn restore(data: &[u8], output: &Path, password: Option<&str>) -> Result<()>
     }
     builder.create(output)?;
     // Own only the newly created directory. Roll it back on any extraction error.
-    if let Err(error) = extract_entries(archive, output, password) {
+    if let Err(error) = extract_entries(archive, output, password, max_bytes) {
         fs::remove_dir_all(output)?;
         return Err(error);
     }
@@ -119,11 +128,11 @@ pub fn restore(data: &[u8], output: &Path, password: Option<&str>) -> Result<()>
 }
 
 fn extract_entries(
-    mut archive: ZipArchive<Cursor<&[u8]>>,
+    mut archive: ZipArchive<impl Read + Seek>,
     output: &Path,
     password: Option<&str>,
+    mut remaining: u64,
 ) -> Result<()> {
-    let mut remaining = MAX_EXPANDED;
     for i in 0..archive.len() {
         let mut entry = match password {
             Some(s) => archive.by_index_decrypt(i, s.as_bytes())?,
@@ -150,7 +159,10 @@ fn extract_entries(
             return Err("Expanded backup exceeds limit".into());
         }
         let mut target = options.open(path)?;
-        let copied = io::copy(&mut entry.by_ref().take(remaining + 1), &mut target)?;
+        let copied = io::copy(
+            &mut entry.by_ref().take(remaining.saturating_add(1)),
+            &mut target,
+        )?;
         if copied != entry.size() {
             return Err("ZIP size mismatch".into());
         }
@@ -172,10 +184,13 @@ mod tests {
         fs::create_dir(&source)?;
         fs::write(source.join("notes"), b"test")?;
         let archive = create_zip(&source)?;
+        let limited = temp.path().join("limited");
+        assert!(restore(archive.try_clone()?, &limited, None, 3).is_err());
+        assert!(!limited.exists());
         let out = temp.path().join("restore");
-        restore(&archive, &out, None)?;
+        restore(archive.try_clone()?, &out, None, u64::MAX)?;
         assert_eq!(fs::read(out.join("source/notes"))?, b"test");
-        assert!(restore(&archive, &out, None).is_err());
+        assert!(restore(archive, &out, None, u64::MAX).is_err());
         Ok(())
     }
 

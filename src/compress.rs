@@ -1,14 +1,17 @@
 use crate::{constants::*, Result};
 use std::{
-    io::Write,
+    io::{self, Write},
     path::Path,
     process::{Command, Stdio},
 };
 
-pub fn encode(file: &Path, fps: u32, data: &[u8]) -> Result<()> {
-    if data.len() > MAX_ARCHIVE {
-        return Err("Encrypted archive exceeds 64 MiB".into());
-    }
+pub fn encode(
+    file: &Path,
+    fps: u32,
+    size: u64,
+    write_payload: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    size.checked_add(12).ok_or("Video payload too large")?;
     let canonical = file.canonicalize()?;
     let mut stem = canonical.file_stem().ok_or("Missing filename")?.to_owned();
     stem.push(".mp4");
@@ -49,27 +52,26 @@ pub fn encode(file: &Path, fps: u32, data: &[u8]) -> Result<()> {
         .arg(temp.path().canonicalize()?)
         .stdin(Stdio::piped())
         .spawn()?;
-    let mut input = child.stdin.take().unwrap();
-    let mut payload = Vec::with_capacity(12 + data.len());
-    payload.extend_from_slice(&(data.len() as u64).to_le_bytes());
-    payload.extend_from_slice(&fps.to_le_bytes());
-    payload.extend_from_slice(data);
-    let mut frame = vec![0; WIDTH * HEIGHT];
-    let result = payload.chunks(FRAME_BYTES).try_for_each(|chunk| {
-        for (y, rows) in frame.chunks_exact_mut(WIDTH * BLOCK).enumerate() {
-            let (row, rest) = rows.split_at_mut(WIDTH);
-            for (x, pixels) in row.chunks_exact_mut(BLOCK).enumerate() {
-                let bit = y * (WIDTH / BLOCK) + x;
-                let byte = chunk.get(bit / 8).copied().unwrap_or(0);
-                pixels.fill(if byte & (1 << (bit % 8)) == 0 { 0 } else { 255 });
-            }
-            for other in rest.chunks_exact_mut(WIDTH) {
-                other.copy_from_slice(row);
-            }
+    let mut frames = FrameWriter {
+        output: child.stdin.take().unwrap(),
+        pixels: vec![0; WIDTH * HEIGHT],
+        bytes: [0; FRAME_BYTES],
+        used: 0,
+    };
+    let result = (|| -> Result<()> {
+        frames.write_all(&size.to_le_bytes())?;
+        frames.write_all(&fps.to_le_bytes())?;
+        write_payload(&mut frames)?;
+        if frames.used != 0 {
+            frames.bytes[frames.used..].fill(0);
+            frames.write_frame()?;
         }
-        input.write_all(&frame)
-    });
-    drop(input);
+        Ok(())
+    })();
+    drop(frames);
+    if result.is_err() {
+        let _ = child.kill();
+    }
     let status = child.wait()?;
     result?;
     if !status.success() {
@@ -78,4 +80,45 @@ pub fn encode(file: &Path, fps: u32, data: &[u8]) -> Result<()> {
     temp.persist_noclobber(&output)?;
     println!("Created {}", output.display());
     Ok(())
+}
+
+struct FrameWriter<W> {
+    output: W,
+    pixels: Vec<u8>,
+    bytes: [u8; FRAME_BYTES],
+    used: usize,
+}
+
+impl<W: Write> FrameWriter<W> {
+    fn write_frame(&mut self) -> io::Result<()> {
+        for (y, rows) in self.pixels.chunks_exact_mut(WIDTH * BLOCK).enumerate() {
+            let (row, rest) = rows.split_at_mut(WIDTH);
+            for (x, pixels) in row.chunks_exact_mut(BLOCK).enumerate() {
+                let bit = y * (WIDTH / BLOCK) + x;
+                let byte = self.bytes[bit / 8];
+                pixels.fill(if byte & (1 << (bit % 8)) == 0 { 0 } else { 255 });
+            }
+            for other in rest.chunks_exact_mut(WIDTH) {
+                other.copy_from_slice(row);
+            }
+        }
+        self.output.write_all(&self.pixels)
+    }
+}
+
+impl<W: Write> Write for FrameWriter<W> {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        let count = input.len().min(FRAME_BYTES - self.used);
+        self.bytes[self.used..self.used + count].copy_from_slice(&input[..count]);
+        self.used += count;
+        if self.used == FRAME_BYTES {
+            self.write_frame()?;
+            self.used = 0;
+        }
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
 }
