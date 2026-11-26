@@ -1,12 +1,16 @@
 [package]
 name = "youtube-storage"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
-clap = { version = "4.5.54", features = ["derive"] }
-image = "0.24"
-rayon = "1.10"
-tempfile = "3.24.0"
-walkdir = "2.5.0"
-zip = "0.6"
+aes-gcm = "0.10"
+argon2 = "0.5"
+cap-std = "3"
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+rpassword = "7"
+tempfile = "3"
+walkdir = "2"
+zeroize = "1"
+zip = { version = "=9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }

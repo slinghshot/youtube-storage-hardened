@@ -1,241 +1,51 @@
 # YouTube Storage
 
-A Rust CLI tool that encodes any file into a video that can survive YouTube's compression, allowing you to use YouTube as free cloud storage.
+This Rust CLI encodes a file or folder into high-contrast video frames that can survive video recompression. Upload and download are manual. Verify that a downloaded video restores successfully before relying on it as a backup.
 
-## How It Works
+## Build
 
-YouTube re-encodes all uploaded videos with lossy compression, which normally corrupts binary data. This tool uses a **YouTube-resilient encoding scheme**:
+Install Rust 1.95 and FFmpeg with the libx264 encoder. Use a current FFmpeg installation from a trusted source and ensure its executable is first on your PATH.
 
-- **Black & White pixels only** — Maximum contrast survives compression
-- **4×4 pixel blocks per bit** — Redundancy protects against artifacts  
-- **Brightness threshold decoding** — Simple >128 = 1, else = 0
-
-Each frame stores **7,200 bytes** of data at 1280×720 resolution.
-
-## Process Flow
-
-### Compression Process
-
-```mermaid
-flowchart TD
-    A[📁 Input File/Directory] --> B{Password Provided?}
-    B -->|Yes| C[🔐 Create Encrypted ZIP Archive]
-    B -->|No| D[Create ZIP Archive]
-    C --> E[Add Header Metadata]
-    D --> E
-    E --> F[Split Data into Frames]
-    F --> G[Generate Black/White Pixel Blocks]
-    G --> H[Create PNG Frame Images]
-    H --> I[🎬 Encode to MP4 with FFmpeg]
-    I --> J[📹 Output Video File]
-
-    subgraph Header["Header (12 bytes)"]
-        E1[File Size: 8 bytes]
-        E2[FPS: 4 bytes]
-    end
-
-    subgraph Encoding["Pixel Encoding"]
-        G1[1 bit = 4x4 pixel block]
-        G2[Bit 0 = Black RGB 0,0,0]
-        G3[Bit 1 = White RGB 255,255,255]
-    end
+```sh
+cargo build --release --locked
 ```
 
-### Decompression Process
+## Desktop interface
 
-```mermaid
-flowchart TD
-    A[📹 Input Video File] --> B[🎬 Extract Frames with FFmpeg]
-    B --> C[Read Pixel Blocks from Frames]
-    C --> D[Sample Brightness per Block]
-    D --> E[Reconstruct Binary Data]
-    E --> F[Parse Header Metadata]
-    F --> G{Password Provided?}
-    G -->|Yes| H[🔓 Extract & Decrypt ZIP]
-    G -->|No| I[Extract ZIP Archive]
-    H --> J[📁 Output Files/Directory]
-    I --> J
+Open the built executable with no arguments to launch the desktop interface. The GUI requires Python 3 with Tk (`python3` on macOS/Linux or `pythonw` on Windows) and FFmpeg on PATH. CLI commands require only the binary and FFmpeg at runtime.
 
-    subgraph Decoding["Pixel Decoding"]
-        D1[Sample 5 points per block]
-        D2[Average brightness]
-        D3["> 128 = 1, else = 0"]
-    end
+In **Create backup**, choose a file or folder, the output MP4, and optionally a local soundtrack. Enter and confirm your passphrase, then select **Create backup**. In **Restore backup**, choose the video and the parent directory for the new restore folder. You can edit the suggested folder name before selecting **Restore files**. The GUI supports passphrase-encrypted backups. Use the CLI for legacy ZIP recovery or custom restore limits.
+
+## Create and restore a backup
+
+```sh
+youtube-storage compress --file ./documents
+youtube-storage decompress --file ./documents.mp4 --output ./restored
 ```
 
-### End-to-End Workflow
+To select a destination and include a soundtrack, use:
 
-```mermaid
-flowchart LR
-    subgraph Local["Local Machine"]
-        A[📁 Files] --> B[Compress + Encrypt]
-        B --> C[📹 Video]
-    end
-
-    subgraph Cloud["YouTube Cloud"]
-        D[(YouTube Storage)]
-    end
-
-    subgraph Recovery["Recovery"]
-        E[📹 Downloaded Video] --> F[Decompress + Decrypt]
-        F --> G[📁 Restored Files]
-    end
-
-    C -->|Upload| D
-    D -->|Download| E
+```sh
+youtube-storage compress --file ./documents --audio ./narration.wav --output ./videos/backup.mp4
 ```
 
-### Estimated Video Lengths
+The soundtrack is audible to anyone who can play the video, without the backup passphrase. FFmpeg loops or trims it to the video duration and encodes it as AAC. WAV, MP3, FLAC, M4A, AAC and Ogg inputs are supported. Omit `--audio` for a video-only backup.
 
-**At 30 fps (default):**
+Compression prompts for a passphrase twice on the terminal. It encrypts the complete ZIP, including entry names, using Argon2id with a fresh random salt and chunked AES-256-GCM. The authentication tags bind each chunk to its position and the complete payload length. Keep the passphrase in a password manager. Restore verifies authentication before creating output files. The MP4 basename, video length, and approximate backup size remain visible. Compression refuses to overwrite an existing video.
 
-| File Size | Video Duration | Frames |
-|-----------|----------------|--------|
-| 1 GB | ~1.3 hours | 138,889 |
-| 5 GB | ~6.5 hours | 694,444 |
-| 10 GB | ~13 hours | 1,388,889 |
+Choose a trusted output parent directory and a new destination name. On Unix, the restore root is owner-only and files are created with mode 0600. Windows permissions inherit from the parent directory. Backups support regular files and directories with portable UTF-8 names. Links and special files are unsupported. Avoid modifying the source tree during compression.
 
-**At 15 fps:**
+New backups use ZIP64 and have no fixed archive, expanded-data, or video file size cap. They support up to 4,096 entries. Archive processing uses fixed-size buffers and private temporary files in the system temporary directory. Compression needs space for the temporary ZIP and output MP4. Encrypted chunks go directly to the video encoder. Restore needs space for the temporary ZIP and extracted files. The temporary ZIP contains plaintext. Use a temporary directory on an encrypted volume when the files require encryption at rest.
 
-| File Size | Video Duration | Frames |
-|-----------|----------------|--------|
-| 1 GB | ~2.5 hours | 138,889 |
-| 5 GB | ~13 hours | 694,444 |
-| 10 GB | ~26 hours | 1,388,889 |
+Decode accepts local MP4/MOV and Matroska/WebM, with a frame limit of 8,294,400 pixels. Set `--decode-timeout-secs` to raise the default 1,800-second timeout for long jobs. Use `--max-restore-bytes` to enforce an upper bound on extracted bytes. At 30 fps each hour carries about 778 MB of payload before encryption overhead. The video platform's upload and duration limits still apply.
 
-## Installation
+Existing `YTSTORE1` encrypted videos remain readable and retain their original 64 MiB encrypted payload limit.
 
-### Prerequisites
-- [Rust](https://rustup.rs/) (1.70+)
-- [FFmpeg](https://ffmpeg.org/) installed and in PATH
+## Recover a backup made by version 0.2
 
-### Build
-
-```bash
-cargo build --release
+```sh
+youtube-storage decompress --legacy --file old.mp4 --output ./restored
+youtube-storage decompress --legacy --password --file old-encrypted.mp4 --output ./restored-private
 ```
 
-The binary will be at `./target/release/youtube-storage`
-
-## Usage
-
-### Compress (Encode file/directory → Video)
-
-**Compress a file:**
-```bash
-youtube-storage compress --file mydata.zip
-```
-
-**Compress a directory:**
-```bash
-youtube-storage compress --file ./my-folder
-```
-
-**Compress with encryption:**
-```bash
-youtube-storage compress --file mydata.zip --password "your-secret-password"
-```
-
-Creates `mydata.mp4` (or `my-folder.mp4`) ready for YouTube upload.
-
-### Decompress (Video → Original file/directory)
-
-**Decompress without encryption:**
-```bash
-youtube-storage decompress --file downloaded.mp4 --output ./restored
-```
-
-**Decompress with decryption:**
-```bash
-youtube-storage decompress --file downloaded.mp4 --output ./restored --password "your-secret-password"
-```
-
-Works with videos downloaded from YouTube after processing. Files are extracted to the specified output directory.
-
-## Example Workflow
-
-1. **Encode your files with encryption:**
-   ```bash
-   ./target/release/youtube-storage compress --file ./my-documents --password "my-secure-pass"
-   ```
-
-2. **Upload `my-documents.mp4` to YouTube** (unlisted recommended)
-
-3. **When needed, download the video from YouTube**
-
-4. **Decode and decrypt back to original:**
-   ```bash
-   ./target/release/youtube-storage decompress --file my-documents.mp4 --output ./restored --password "my-secure-pass"
-   ```
-
-5. **Verify your files are intact in `./restored/my-documents/`**
-
-## Technical Specifications
-
-| Parameter | Value |
-|-----------|-------|
-| Resolution | 1280×720 (720p) |
-| Frame Rate | 30 fps |
-| Block Size | 4×4 pixels per bit |
-| Bits per Frame | 57,600 |
-| Bytes per Frame | 7,200 |
-| Encoding | Binary (black/white) |
-| Output Format | MP4 (H.264) |
-
-### Storage Capacity
-
-| File Size | Video Duration | Frames |
-|-----------|----------------|--------|
-| 1 MB | ~5 seconds | 139 |
-| 10 MB | ~46 seconds | 1,389 |
-| 100 MB | ~8 minutes | 13,889 |
-| 1 GB | ~1.3 hours | 138,889 |
-
-### Why It Survives YouTube
-
-1. **Binary encoding** — Only two states (black/white), not 16 million colors
-2. **Large pixel blocks** — 4×4 = 16 pixels per bit provides redundancy
-3. **High contrast** — RGB(0,0,0) vs RGB(255,255,255) maximally separated
-4. **Multi-point sampling** — Decoder samples 5 points per block and averages
-5. **Brightness threshold** — Even if white becomes gray (200,200,200), it's still >128
-
-## Security
-
-### Built-in ZIP Encryption
-
-This tool uses **standard ZIP encryption** (like `zip -e`), making encrypted archives compatible with standard ZIP tools:
-
-- **ZipCrypto encryption** — Standard ZIP password protection
-- **Integrated with compression** — Single-step zip + encrypt
-- **Cross-compatible** — Archives can be extracted with `unzip`, 7-Zip, etc.
-
-When you use the `--password` option:
-1. Files are compressed into a ZIP archive
-2. Each file in the archive is encrypted with your password
-3. The encrypted ZIP is then encoded into the video
-
-**⚠️ Important:** If you lose your password, the data cannot be recovered!
-
-**💡 Tip:** For maximum security with sensitive data, consider pre-encrypting with GPG before compression.
-
-## Limitations
-
-- **Video length** — Large files create long videos (224 MB ≈ 36 minutes)
-- **Processing time** — Encoding/decoding takes time for large files
-- **YouTube limits** — Videos over 15 minutes require account verification
-- **Password recovery** — No way to recover encrypted data without the password
-
-## Tips
-
-- **Always use encryption** — Use `--password` for any sensitive data
-- **Use unlisted** — Keep videos unlisted to avoid attention
-- **Download highest quality** — Always download the highest resolution available
-- **Save your password securely** — Use a password manager
-
-## License
-
-MIT
-
-## Disclaimer
-> [!WARNING]  
-> This tool is for educational purposes. Review YouTube's Terms of Service before using for storage. The authors are not responsible for any account actions or data loss.
+Use the second command for legacy ZipCrypto and enter the old password at the prompt. Legacy data lacks authenticated encryption. Recover trusted old backups into a new directory and re-encode them to migrate. Legacy ZIPs default to 64 MiB compressed and 256 MiB extracted. An explicit `--max-restore-bytes` sets both budgets for legacy recovery.
