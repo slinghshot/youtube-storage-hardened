@@ -55,6 +55,7 @@ jobs:
       - name: Diagnose service failures
         if: failure()
         run: |
+          sudo journalctl -k --no-pager -g "oom|Out of memory|Killed process" --since="-30 min" || true
           docker compose ps -a
           docker compose logs --tail=50 app https
           docker inspect --format 'OOM={{.State.OOMKilled}} restarts={{.RestartCount}} exit={{.State.ExitCode}}' "$(docker compose ps -aq app)"
