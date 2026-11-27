@@ -1,0 +1,56 @@
+name: LAN service
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.*"
+      - "Dockerfile"
+      - "compose.yaml"
+      - "deploy/**"
+      - "tests/lan_roundtrip.py"
+      - ".github/workflows/lan.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  encrypted-storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LAN_HOST: "127.0.0.1"
+      LAN_IP: "127.0.0.1"
+      PUBLIC_ORIGIN: "https://127.0.0.1:8443"
+      JOB_DIR: /mnt/ys-fscrypt/jobs
+      LOGIN_FILE: /tmp/ys-login
+      CA_FILE: /tmp/ys-ca.crt
+      RUN_ZIP64: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare disposable encrypted filesystem
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          truncate -s 12G /tmp/ys-test-ext4
+          mkfs.ext4 -q -O encrypt /tmp/ys-test-ext4
+          sudo mkdir /mnt/ys-fscrypt
+          sudo mount -o loop /tmp/ys-test-ext4 /mnt/ys-fscrypt
+          sudo install -d -m 0700 -o 10001 -g 10001 "$JOB_DIR"
+          openssl rand -hex 24 > "$LOGIN_FILE"
+          sudo chgrp 10001 "$LOGIN_FILE"
+          chmod 0640 "$LOGIN_FILE"
+      - name: Start stack and trust its test CA
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            if docker compose cp https:/data/caddy/pki/authorities/local/root.crt "$CA_FILE" && curl -fsS --cacert "$CA_FILE" "$PUBLIC_ORIGIN/" >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs app
+          exit 1
+      - name: Exercise real HTTPS and fscrypt
+        run: python3 tests/lan_roundtrip.py
+      - name: Shut down
+        if: always()
+        run: docker compose down --volumes

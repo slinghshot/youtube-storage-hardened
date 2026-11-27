@@ -8,7 +8,7 @@ use std::{
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
-fn portable_name(name: &str) -> Result<()> {
+pub(crate) fn portable_name(name: &str) -> Result<()> {
     let parts: Vec<_> = name.strip_suffix('/').unwrap_or(name).split('/').collect();
     if name.len() > 4096 || parts.len() > 64 {
         return Err("Archive path too long".into());
@@ -41,6 +41,10 @@ fn portable_name(name: &str) -> Result<()> {
 }
 
 pub fn create_zip(input: &Path) -> Result<File> {
+    write_zip(input, tempfile::tempfile()?)
+}
+
+pub(crate) fn write_zip(input: &Path, output: File) -> Result<File> {
     let meta = input.symlink_metadata()?;
     if !(meta.is_dir() || meta.is_file()) {
         return Err("Expected a regular file or directory".into());
@@ -53,7 +57,7 @@ pub fn create_zip(input: &Path) -> Result<File> {
         if meta.is_dir() { &absolute } else { parent },
         ambient_authority(),
     )?;
-    let mut writer = ZipWriter::new(tempfile::tempfile()?);
+    let mut writer = ZipWriter::new(output);
     let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o600);

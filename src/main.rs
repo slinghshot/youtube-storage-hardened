@@ -2,6 +2,8 @@ mod compress;
 mod constants;
 mod decompress;
 mod encryption;
+#[cfg(all(feature = "lan", target_os = "linux"))]
+mod lan;
 mod zip_utils;
 
 use clap::{Parser, Subcommand};
@@ -23,6 +25,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the private LAN browser service
+    #[cfg(all(feature = "lan", target_os = "linux"))]
+    Serve,
+    #[cfg(all(feature = "lan", target_os = "linux"))]
+    #[command(hide = true)]
+    LanPack { source: PathBuf, output: PathBuf },
     /// Open the desktop interface
     Gui,
     /// Create an encrypted video backup
@@ -79,6 +87,13 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let piped = cli.passphrase_stdin;
     match cli.command.unwrap_or(Commands::Gui) {
+        #[cfg(all(feature = "lan", target_os = "linux"))]
+        Commands::Serve => lan::serve(),
+        #[cfg(all(feature = "lan", target_os = "linux"))]
+        Commands::LanPack { source, output } => {
+            zip_utils::write_zip(&source, std::fs::File::create_new(output)?)?;
+            Ok(())
+        }
         Commands::Gui => {
             let python = if cfg!(windows) { "pythonw" } else { "python3" };
             let status = std::process::Command::new(python)

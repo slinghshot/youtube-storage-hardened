@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Video backups</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eff3f1;color:#19362e;font:16px/1.5 system-ui,sans-serif}header{background:#173c33;color:white;padding:18px max(6vw,20px);display:flex;justify-content:space-between;align-items:center}main{max-width:970px;margin:42px auto;padding:0 20px}section,article{background:white;border:1px solid #c7d5cf;border-radius:12px;padding:24px;margin-bottom:18px}h1,h2{letter-spacing:-.04em;margin:0 0 16px}header strong{font-size:20px}label{display:block;margin-bottom:15px;font-weight:600}input,select{display:block;width:100%;padding:9px;border-radius:6px;border:1px solid #aabbb5;background:#fafcfb;font:inherit}button{font:inherit;border:0;border-radius:6px;padding:8px 15px;background:#14644c;color:white;cursor:pointer}button:disabled{opacity:.55}nav{display:flex;gap:8px;margin-bottom:18px}nav button[aria-pressed=false],.secondary{background:#dfebe6;color:#173c33}#layout{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;align-items:start}progress{width:100%;accent-color:#14644c}.job{border-top:1px solid #dbe4df;padding:14px 0}.job button{margin:6px 8px 0 0}.muted{color:#49655a;font-size:.9rem}#message{white-space:pre-wrap}dialog{border:1px solid #adc3b8;border-radius:12px;padding:24px}dialog::backdrop{background:#18352d77}[hidden]{display:none!important}@media(max-width:700px){#layout{grid-template-columns:1fr}main{margin:20px auto}}
+</style><script src="/app.js" defer></script></head><body><header><strong>Video backups</strong><button id="logout" class="secondary" hidden>Sign out</button></header><main>
+<section id="loginBox"><h1>Sign in</h1><form id="login"><label>Service password<input type="password" name="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
+<div id="workspace" hidden><nav><button id="create" aria-pressed="true">Create backup</button><button id="restore" aria-pressed="false">Restore backup</button></nav>
+<div id="layout"><section><h1 id="title">Create backup</h1><form id="upload">
+<label>Backup passphrase<input id="pass" type="password" required autocomplete="off"></label>
+<label id="confirmLabel">Confirm passphrase<input type="password" id="confirm" autocomplete="off"></label>
+<label id="typeLabel">Source<select id="type"><option>File</option><option>Folder</option></select></label>
+<label><span id="sourceLabel">Choose a file</span><input type="file" id="source" required></label>
+<label id="audioLabel">Soundtrack (optional)<input type="file" id="audio" accept="audio/*"></label>
+<button id="submit">Upload and create</button><progress id="progress" max="100" value="0" hidden></progress></form></section>
+<section><h2>Jobs</h2><p class="muted">Completed downloads are available for 24 hours.</p><div id="jobs"></div></section></div></div>
+<p id="message" role="status"></p>
+<dialog id="unlock"><form id="download" method="post"><h2>Unlock download</h2><label>Backup passphrase<input name="password" type="password" required autocomplete="off"></label><button>Download</button> <button id="cancel" class="secondary" type="button">Cancel</button></form></dialog>
+</main></body></html>
