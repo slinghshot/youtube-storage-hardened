@@ -1,0 +1,52 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ulimits:
+      core: 0
+    pids_limit: 256
+    cpus: 4
+    mem_limit: 2g
+    memswap_limit: 2g
+    environment:
+      PUBLIC_ORIGIN: https://${LAN_HOST:?set LAN_HOST}:${HTTPS_PORT:-8443}
+      TRUSTED_PROXY_HOST: https
+      JOB_ROOT: /jobs
+      LOGIN_SECRET_FILE: /run/secrets/login
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-17179869184}
+      MAX_RESTORE_BYTES: ${MAX_RESTORE_BYTES:-34359738368}
+      RESERVE_BYTES: ${RESERVE_BYTES:-2147483648}
+      DECODE_TIMEOUT_SECS: ${DECODE_TIMEOUT_SECS:-86400}
+    volumes:
+      - type: bind
+        source: ${JOB_DIR:?set JOB_DIR}
+        target: /jobs
+        bind: {create_host_path: false}
+    secrets: [login]
+    networks: [backend]
+  https:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${LAN_IP:?set LAN_IP}:${HTTPS_PORT:-8443}:8443/tcp"
+    environment:
+      LAN_HOST: ${LAN_HOST:?set LAN_HOST}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ca:/data
+      - config:/config
+    networks: [backend, edge]
+networks:
+  backend: {internal: true}
+  edge: {}
+volumes:
+  ca: {}
+  config: {}
+secrets:
+  login:
+    file: ${LOGIN_FILE:?set LOGIN_FILE}

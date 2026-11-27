@@ -10,6 +10,10 @@ Install Rust 1.95 and FFmpeg with the libx264 encoder. Use a current FFmpeg inst
 cargo build --release --locked
 ```
 
+## LAN browser interface
+
+Deploy the Linux service with Docker Compose to create backups and restore files from a browser over private HTTPS. It uses the Rust backend, per-job fscrypt storage, and 24-hour result retention. [Setup and storage requirements](deploy/README.md)
+
 ## Desktop interface
 
 Open the built executable with no arguments to launch the desktop interface. The GUI requires Python 3 with Tk (`python3` on macOS/Linux or `pythonw` on Windows) and FFmpeg on PATH. CLI commands require only the binary and FFmpeg at runtime.

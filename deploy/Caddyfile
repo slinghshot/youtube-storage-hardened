@@ -1,0 +1,15 @@
+{
+    admin off
+    default_sni {$LAN_HOST}
+    auto_https disable_redirects
+    skip_install_trust
+    servers {
+        protocols h1 h2
+    }
+}
+https://{$LAN_HOST}:8443 {
+    tls internal
+    reverse_proxy app:8080 {
+        header_up X-LAN-Client-IP {http.request.remote.host}
+    }
+}
