@@ -23,6 +23,7 @@ jobs:
       JOB_DIR: /mnt/ys-fscrypt/jobs
       LOGIN_FILE: /tmp/ys-login
       CA_FILE: /tmp/ys-ca.crt
+      LAN_DISPOSABLE_TEST: "1"
       RUN_ZIP64: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

@@ -310,7 +310,15 @@ async fn gate(State(s): State<Shared>, req: Request, next: Next) -> Response {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut r = next.run(req).await;
-    for (name,value) in [("cache-control","no-store"),("x-content-type-options","nosniff"),("referrer-policy","no-referrer"),("content-security-policy","default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")] {r.headers_mut().insert(name,value.parse().unwrap());}
+    const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+    for (name, value) in [
+        ("cache-control", "no-store"),
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("content-security-policy", CSP),
+    ] {
+        r.headers_mut().insert(name, value.parse().unwrap());
+    }
     r
 }
 #[derive(Deserialize)]
@@ -390,11 +398,11 @@ async fn jobs(State(s): State<Shared>) -> Web<Json<Vec<Row>>> {
     Ok(Json(rows))
 }
 async fn delete_job(State(s): State<Shared>, RoutePath(id): RoutePath<String>) -> Web<StatusCode> {
-    let mut job = Lease::take(s, id)?;
+    let job = Lease::take(s, id)?;
     if !job.dir().exists() {
         return Err(StatusCode::NOT_FOUND);
     }
-    job.discard = true;
+    fs::remove_dir_all(job.dir()).map_err(|_| INTERNAL)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

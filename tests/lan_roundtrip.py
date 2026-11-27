@@ -20,10 +20,10 @@ def compose(*args):
     subprocess.run(["docker", "compose", *args], cwd=compose_dir, check=True)
 
 
-def request(route, *args, expected=200, target=None):
+def request(route, *args, expected=200, target=None, request_origin=None):
     cmd = ["curl", "--silent", "--show-error", "--max-time", "1200", "--cacert", str(ca),
            "-b", "cookies", "-c", "cookies", "-o", target or "response", "-w", "%{http_code}",
-           "-H", "Origin: " + origin, *args, origin + route]
+           "-H", "Origin: " + (request_origin or origin), *args, origin + route]
     status = subprocess.check_output(cmd).decode()
     assert status == str(expected), (route, status, expected)
     return Path("response").read_bytes() if target is None else b""
@@ -63,11 +63,15 @@ def digest(name):
 with tempfile.TemporaryDirectory() as tmp:
     os.chdir(tmp)
     request("/jobs", expected=401)
-    request("/login", "-H", "Origin: https://wrong.invalid", "-d", "password=x", expected=403)
+    request("/login", "-d", "password=x", expected=403, request_origin="https://wrong.invalid")
     sign_in()
     Path("notes").write_bytes(secrets.token_bytes(24000))
     first = upload("create", [("file:notes", "notes")])
     wait(first)
+    # The service UID itself cannot open these names after eviction.
+    compose("exec", "-T", "app", "sh", "-ec",
+            'test ! -e "$1/result" && test ! -e "$1/name" && test -n "$(ls -A "$1")"',
+            "check-locked", "/jobs/" + first + "/vault")
     compose("restart", "app")
     for _ in range(60):
         try:
@@ -78,6 +82,18 @@ with tempfile.TemporaryDirectory() as tmp:
     sign_in()
     request(f"/jobs/{first}/download", "-d", "password=wrong", expected=403)
     download(first, "backup.mp4")
+    cli = str(Path.cwd() / "youtube-storage")
+    compose("cp", "app:/usr/local/bin/youtube-storage", cli)
+    os.chmod(cli, 0o700)
+    subprocess.run([cli, "decompress", "--file", "backup.mp4", "--output", "cli-restored",
+                    "--passphrase-stdin"], input=password.encode(), check=True)
+    assert digest("notes") == digest("cli-restored/notes")
+    subprocess.run([cli, "compress", "--file", "notes", "--output", "cli.mp4", "--passphrase-stdin"],
+                   input=password.encode(), check=True)
+    cli_job = upload("restore", [("file:cli.mp4", "cli.mp4")])
+    wait(cli_job)
+    download(cli_job, "cli-via-web")
+    assert digest("notes") == digest("cli-via-web")
     wrong = upload("restore", [("file:backup.mp4", "backup.mp4")], secret="wrong")
     wait(wrong, "Failed")
     request(f"/jobs/{wrong}/download", "-d", "password=wrong", expected=404)
@@ -98,6 +114,23 @@ with tempfile.TemporaryDirectory() as tmp:
     download(restored, "folder.zip")
     with zipfile.ZipFile("folder.zip") as archive:
         assert archive.read("folder/sub/b") == archive.read("folder/a") == Path("notes").read_bytes()
+    # Force a test job past its deadline and restart with an incomplete job present.
+    # These operations are restricted to the dedicated CI environment below.
+    if os.environ.get("LAN_DISPOSABLE_TEST") == "1":
+        partial = secrets.token_hex(16)
+        compose("exec", "-T", "app", "sh", "-ec",
+                'echo 1 > "$1/complete"; mkdir "$2"', "expire",
+                "/jobs/" + restored, "/jobs/" + partial)
+        compose("restart", "app")
+        for _ in range(60):
+            try:
+                sign_in()
+                break
+            except (AssertionError, subprocess.CalledProcessError):
+                time.sleep(1)
+        request(f"/jobs/{restored}/download", "-d", "password=x", expected=404)
+        compose("exec", "-T", "app", "sh", "-ec", 'test ! -e "$1" && test ! -e "$2"',
+                "cleaned", "/jobs/" + restored, "/jobs/" + partial)
     print("HTTPS upload, restart, unlock, wrong passphrase, folder, soundtrack, download and deletion passed.")
 
     if os.getenv("RUN_ZIP64") == "1":
