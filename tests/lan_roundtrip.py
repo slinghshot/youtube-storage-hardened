@@ -42,9 +42,7 @@ def upload(mode, files, secret=password):
 
 def wait(job, state="Ready"):
     for _ in range(1200):
-        # A busy runner can briefly time out connecting to the backend. Retry
-        # only this read-only poll. Lost sessions and failed jobs still fail.
-        rows = json.loads(request("/jobs", "--retry", "2", "--retry-delay", "1", "--retry-max-time", "15"))
+        rows = json.loads(request("/jobs"))
         row = next((r for r in rows if r["id"] == job), None)
         if row and row["status"] == state:
             return

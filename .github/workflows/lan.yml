@@ -36,7 +36,11 @@ jobs:
           truncate -s 12G /tmp/ys-test-ext4
           mkfs.ext4 -q -O encrypt /tmp/ys-test-ext4
           sudo mkdir /mnt/ys-fscrypt
-          sudo mount -o loop /tmp/ys-test-ext4 /mnt/ys-fscrypt
+          # The container already accounts for the mounted filesystem cache.
+          # Bypass the duplicate host-file cache of this CI-only loop device.
+          loop_device=$(sudo losetup --find --show --direct-io=on /tmp/ys-test-ext4)
+          test "$(cat /sys/block/${loop_device##*/}/loop/dio)" = 1
+          sudo mount "$loop_device" /mnt/ys-fscrypt
           sudo install -d -m 0700 -o 10001 -g 10001 "$JOB_DIR"
           openssl rand -hex 24 > "$LOGIN_FILE"
           sudo chgrp 10001 "$LOGIN_FILE"
