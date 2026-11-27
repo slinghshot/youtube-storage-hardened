@@ -1,7 +1,8 @@
+mod multipart;
+mod transfer;
 mod vault;
 use axum::{
-    body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path as RoutePath, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path as RoutePath, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -9,6 +10,7 @@ use axum::{
     Form, Json, Router,
 };
 use fs2::FileExt;
+use multipart::UploadParts;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,15 +18,13 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Cursor},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Semaphore,
-};
+use tokio::{io::AsyncWriteExt, sync::Semaphore};
 use zeroize::Zeroizing;
 
 type Shared = Arc<Service>;
@@ -57,7 +57,9 @@ struct Service {
     origin: String,
     login: Zeroizing<Vec<u8>>,
     sessions: Mutex<HashMap<String, u64>>,
-    attempts: Mutex<Vec<u64>>,
+    attempts: Mutex<HashMap<IpAddr, Vec<u64>>>,
+    trusted_proxy: Option<String>,
+    derivations: Arc<Semaphore>,
     busy: Mutex<HashSet<String>>,
     stages: Mutex<HashMap<String, &'static str>>,
     worker: Arc<Semaphore>,
@@ -218,6 +220,8 @@ pub fn serve() -> crate::Result<()> {
         login,
         sessions: Default::default(),
         attempts: Default::default(),
+        trusted_proxy: env::var("TRUSTED_PROXY_HOST").ok(),
+        derivations: Arc::new(Semaphore::new(2)),
         busy: Default::default(),
         stages: Default::default(),
         worker: Arc::new(Semaphore::new(1)),
@@ -274,7 +278,11 @@ pub fn serve() -> crate::Result<()> {
             ))
             .layer(middleware::from_fn_with_state(s.clone(), gate))
             .with_state(s);
-        axum::serve(tokio::net::TcpListener::bind("0.0.0.0:8080").await?, app).await
+        axum::serve(
+            tokio::net::TcpListener::bind("0.0.0.0:8080").await?,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
     })?;
     Ok(())
 }
@@ -325,17 +333,54 @@ async fn gate(State(s): State<Shared>, req: Request, next: Next) -> Response {
 struct Pass {
     password: String,
 }
-async fn sign_in(State(s): State<Shared>, Form(p): Form<Pass>) -> Web<Response> {
-    let pass = Zeroizing::new(p.password);
-    let mut attempts = s.attempts.lock().unwrap();
-    attempts.retain(|t| t + 60 > now());
-    if attempts.len() >= 10 {
+fn verify_login(
+    attempts: &mut HashMap<IpAddr, Vec<u64>>,
+    client: IpAddr,
+    time: u64,
+    valid: bool,
+) -> Web<()> {
+    attempts.retain(|_, times| {
+        times.retain(|t| time.saturating_sub(*t) < 60);
+        !times.is_empty()
+    });
+    if attempts.get(&client).is_some_and(|times| times.len() >= 10) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
-    if !bool::from(pass.as_bytes().ct_eq(&s.login)) {
-        attempts.push(now());
+    if !valid {
+        if attempts.len() >= 4096 && !attempts.contains_key(&client) {
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+        attempts.entry(client).or_default().push(time);
         return Err(StatusCode::UNAUTHORIZED);
     }
+    Ok(())
+}
+async fn sign_in(
+    State(s): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Form(p): Form<Pass>,
+) -> Web<Response> {
+    let pass = Zeroizing::new(p.password);
+    let mut client = peer.ip();
+    if let Some(host) = &s.trusted_proxy {
+        let mut peers = tokio::net::lookup_host((host.as_str(), 0))
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        if peers.any(|addr| addr.ip() == peer.ip()) {
+            client = headers
+                .get("x-lan-client-ip")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+                .ok_or(INVALID)?;
+        }
+    }
+    verify_login(
+        &mut s.attempts.lock().unwrap(),
+        client,
+        now(),
+        bool::from(pass.as_bytes().ct_eq(&s.login)),
+    )?;
     let token = hex::encode(random::<32>());
     let mut sessions = s.sessions.lock().unwrap();
     sessions.retain(|_, t| *t > now());
@@ -406,13 +451,7 @@ async fn delete_job(State(s): State<Shared>, RoutePath(id): RoutePath<String>) -
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn next_field(parts: &mut Multipart) -> Web<Option<axum::extract::multipart::Field<'_>>> {
-    tokio::time::timeout(Duration::from_secs(90), parts.next_field())
-        .await
-        .map_err(|_| StatusCode::REQUEST_TIMEOUT)?
-        .map_err(|_| INVALID)
-}
-async fn small(field: axum::extract::multipart::Field<'_>) -> Web<Zeroizing<String>> {
+async fn small(field: multipart::UploadField<'_>) -> Web<Zeroizing<String>> {
     let mut field = field;
     let mut bytes = Zeroizing::new(Vec::new());
     while let Some(chunk) = tokio::time::timeout(Duration::from_secs(90), field.chunk())
@@ -431,7 +470,8 @@ async fn small(field: axum::extract::multipart::Field<'_>) -> Web<Zeroizing<Stri
     }
     Ok(Zeroizing::new(text.to_owned()))
 }
-async fn upload(State(s): State<Shared>, mut parts: Multipart) -> Web<(StatusCode, String)> {
+async fn upload(State(s): State<Shared>, request: Request) -> Web<(StatusCode, String)> {
+    let mut parts = UploadParts::new(request).await?;
     let permit = s
         .worker
         .clone()
@@ -441,12 +481,12 @@ async fn upload(State(s): State<Shared>, mut parts: Multipart) -> Web<(StatusCod
     let id = hex::encode(random::<16>());
     let mut job = Lease::take(s.clone(), id.clone())?;
     let (pass, mode, source, audio) = tokio::time::timeout(Duration::from_secs(4 * 3600), async {
-        let field = next_field(&mut parts).await?.ok_or(INVALID)?;
+        let field = parts.next_field().await?.ok_or(INVALID)?;
         if field.name() != Some("password") {
             return Err(INVALID);
         }
         let pass = small(field).await?;
-        let field = next_field(&mut parts).await?.ok_or(INVALID)?;
+        let field = parts.next_field().await?.ok_or(INVALID)?;
         if field.name() != Some("mode") {
             return Err(INVALID);
         }
@@ -463,7 +503,7 @@ async fn upload(State(s): State<Shared>, mut parts: Multipart) -> Web<(StatusCod
         let mut audio = None;
         let mut files = 0;
         let mut total = 0u64;
-        while let Some(mut field) = next_field(&mut parts).await? {
+        while let Some(mut field) = parts.next_field().await? {
             let name = field.name().ok_or(INVALID)?;
             let path = if name == "audio" && mode == "create" && audio.is_none() {
                 let path = data.join("soundtrack");
@@ -658,43 +698,53 @@ async fn download(
     if pass.is_empty() || pass.len() > SECRET_LIMIT {
         return Err(INVALID);
     }
-    let mut job = Lease::take(s, id)?;
-    if completed(&job.dir()).is_none_or(|t| t <= now()) {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let info = key_info(&job.dir()).map_err(|_| INTERNAL)?;
-    let mut raw = Zeroizing::new([0; 64]);
-    let body = info
-        .wrapped
-        .strip_prefix(crate::encryption::MAGIC)
-        .ok_or(INTERNAL)?;
-    crate::encryption::decrypt(
-        body,
-        info.wrapped.len() as u64,
-        &pass,
-        Cursor::new(&mut raw[..]),
-    )
-    .map_err(|_| StatusCode::FORBIDDEN)?;
-    if vault::identifier(&raw) != info.identifier {
-        return Err(INTERNAL);
-    }
+    let mut job = Lease::take(s.clone(), id)?;
+    let expires = completed(&job.dir())
+        .filter(|t| *t > now())
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let permit = s
+        .derivations
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+    let dir = job.dir();
+    let raw = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let info = key_info(&dir).map_err(|_| INTERNAL)?;
+        let mut raw = Zeroizing::new([0; 64]);
+        let body = info
+            .wrapped
+            .strip_prefix(crate::encryption::MAGIC)
+            .ok_or(INTERNAL)?;
+        crate::encryption::decrypt(
+            body,
+            info.wrapped.len() as u64,
+            &pass,
+            Cursor::new(&mut raw[..]),
+        )
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+        if vault::identifier(&raw) != info.identifier {
+            return Err(INTERNAL);
+        }
+        Ok(raw)
+    })
+    .await
+    .map_err(|_| INTERNAL)??;
+    let remaining = Duration::from_secs(expires)
+        .checked_sub(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| INTERNAL)?,
+        )
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let deadline = tokio::time::Instant::now() + remaining;
     job.unlock(&raw)?;
     let filename = fs::read_to_string(job.data().join("name")).map_err(|_| INTERNAL)?;
     let file = tokio::fs::File::open(job.data().join("result"))
         .await
         .map_err(|_| INTERNAL)?;
     let length = file.metadata().await.map_err(|_| INTERNAL)?.len();
-    let mut download = DownloadBody { file, _key: job };
-    let stream = async_stream::stream! {
-        let mut buf = vec![0;128<<10];
-        loop {
-            match download.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => yield Ok::<_,io::Error>(axum::body::Bytes::copy_from_slice(&buf[..n])),
-                Err(error) => {yield Err(error); break}
-            }
-        }
-    };
+    let body = transfer::download_body(file, job, length, deadline, Duration::from_secs(90));
     let encoded: String = url::form_urlencoded::byte_serialize(filename.as_bytes())
         .collect::<String>()
         .replace('+', "%20");
@@ -707,18 +757,30 @@ async fn download(
                 format!("attachment; filename*=UTF-8''{encoded}"),
             ),
         ],
-        Body::from_stream(stream),
+        body,
     )
         .into_response())
 }
 
-// Rust drops fields in declaration order, even if the response is never polled.
-struct DownloadBody {
-    file: tokio::fs::File,
-    _key: Lease,
-}
-impl DownloadBody {
-    async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buf).await
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_logins_only_throttle_the_same_client_for_one_minute() {
+        let a = IpAddr::from([192, 0, 2, 1]);
+        let b = IpAddr::from([192, 0, 2, 2]);
+        let mut attempts = HashMap::new();
+        for _ in 0..10 {
+            assert_eq!(
+                verify_login(&mut attempts, a, 10, false),
+                Err(StatusCode::UNAUTHORIZED)
+            );
+        }
+        assert_eq!(
+            verify_login(&mut attempts, a, 69, true),
+            Err(StatusCode::TOO_MANY_REQUESTS)
+        );
+        assert!(verify_login(&mut attempts, b, 69, true).is_ok());
+        assert!(verify_login(&mut attempts, a, 70, true).is_ok());
     }
 }

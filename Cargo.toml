@@ -16,7 +16,7 @@ zeroize = "1"
 zip = { version = "=9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [features]
-lan = ["dep:axum","dep:tokio","dep:serde","dep:serde_json","dep:hex","dep:fs2","dep:async-stream","dep:nix","dep:hkdf","dep:sha2","dep:subtle","dep:url"]
+lan = ["dep:axum","dep:futures-util","dep:tokio","dep:serde","dep:serde_json","dep:hex","dep:fs2","dep:async-stream","dep:nix","dep:hkdf","dep:sha2","dep:subtle","dep:url"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 axum = { version = "0.8", features = ["multipart"], optional = true }
@@ -31,3 +31,4 @@ hkdf = { version = "0.12", optional = true }
 sha2 = { version = "0.10", optional = true }
 subtle = { version = "2", optional = true }
 url = { version = "2", optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }

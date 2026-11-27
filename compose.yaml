@@ -15,6 +15,7 @@ services:
     memswap_limit: 2g
     environment:
       PUBLIC_ORIGIN: https://${LAN_HOST:?set LAN_HOST}:${HTTPS_PORT:-8443}
+      TRUSTED_PROXY_HOST: https
       JOB_ROOT: /jobs
       LOGIN_SECRET_FILE: /run/secrets/login
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-17179869184}

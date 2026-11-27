@@ -1700,6 +1700,7 @@ dependencies = [
  "cap-std",
  "clap",
  "fs2",
+ "futures-util",
  "hex",
  "hkdf",
  "nix 0.30.1",
