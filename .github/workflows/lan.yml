@@ -52,6 +52,12 @@ jobs:
           exit 1
       - name: Exercise real HTTPS and fscrypt
         run: python3 tests/lan_roundtrip.py
+      - name: Diagnose service failures
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail=50 app https
+          docker inspect --format 'OOM={{.State.OOMKilled}} restarts={{.RestartCount}} exit={{.State.ExitCode}}' "$(docker compose ps -aq app)"
       - name: Shut down
         if: always()
         run: docker compose down --volumes
