@@ -406,10 +406,20 @@ async fn delete_job(State(s): State<Shared>, RoutePath(id): RoutePath<String>) -
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn next_field(parts: &mut Multipart) -> Web<Option<axum::extract::multipart::Field<'_>>> {
+    tokio::time::timeout(Duration::from_secs(90), parts.next_field())
+        .await
+        .map_err(|_| StatusCode::REQUEST_TIMEOUT)?
+        .map_err(|_| INVALID)
+}
 async fn small(field: axum::extract::multipart::Field<'_>) -> Web<Zeroizing<String>> {
     let mut field = field;
     let mut bytes = Zeroizing::new(Vec::new());
-    while let Some(chunk) = field.chunk().await.map_err(|_| INVALID)? {
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(90), field.chunk())
+        .await
+        .map_err(|_| StatusCode::REQUEST_TIMEOUT)?
+        .map_err(|_| INVALID)?
+    {
         if bytes.len() + chunk.len() > SECRET_LIMIT {
             return Err(INVALID);
         }
@@ -431,20 +441,12 @@ async fn upload(State(s): State<Shared>, mut parts: Multipart) -> Web<(StatusCod
     let id = hex::encode(random::<16>());
     let mut job = Lease::take(s.clone(), id.clone())?;
     let (pass, mode, source, audio) = tokio::time::timeout(Duration::from_secs(4 * 3600), async {
-        let field = parts
-            .next_field()
-            .await
-            .map_err(|_| INVALID)?
-            .ok_or(INVALID)?;
+        let field = next_field(&mut parts).await?.ok_or(INVALID)?;
         if field.name() != Some("password") {
             return Err(INVALID);
         }
         let pass = small(field).await?;
-        let field = parts
-            .next_field()
-            .await
-            .map_err(|_| INVALID)?
-            .ok_or(INVALID)?;
+        let field = next_field(&mut parts).await?.ok_or(INVALID)?;
         if field.name() != Some("mode") {
             return Err(INVALID);
         }
@@ -461,7 +463,7 @@ async fn upload(State(s): State<Shared>, mut parts: Multipart) -> Web<(StatusCod
         let mut audio = None;
         let mut files = 0;
         let mut total = 0u64;
-        while let Some(mut field) = parts.next_field().await.map_err(|_| INVALID)? {
+        while let Some(mut field) = next_field(&mut parts).await? {
             let name = field.name().ok_or(INVALID)?;
             let path = if name == "audio" && mode == "create" && audio.is_none() {
                 let path = data.join("soundtrack");

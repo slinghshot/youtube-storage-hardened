@@ -48,7 +48,7 @@ jobs:
             if docker compose cp https:/data/caddy/pki/authorities/local/root.crt "$CA_FILE" && curl -fsS --cacert "$CA_FILE" "$PUBLIC_ORIGIN/" >/dev/null; then exit 0; fi
             sleep 2
           done
-          docker compose logs app
+          docker compose logs app https
           exit 1
       - name: Exercise real HTTPS and fscrypt
         run: python3 tests/lan_roundtrip.py

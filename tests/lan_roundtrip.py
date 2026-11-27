@@ -97,6 +97,10 @@ with tempfile.TemporaryDirectory() as tmp:
     wrong = upload("restore", [("file:backup.mp4", "backup.mp4")], secret="wrong")
     wait(wrong, "Failed")
     request(f"/jobs/{wrong}/download", "-d", "password=wrong", expected=404)
+    subprocess.run(["ffmpeg", "-v", "error", "-i", "backup.mp4", "-frames:v", "1", "-c", "copy", "truncated.mp4"], check=True)
+    damaged = upload("restore", [("file:damaged.mp4", "truncated.mp4")])
+    wait(damaged, "Failed")
+    request(f"/jobs/{damaged}/download", "--data-urlencode", "password=" + password, expected=404)
     second = upload("restore", [("file:backup.mp4", "backup.mp4")])
     wait(second)
     download(second, "recovered")
@@ -146,3 +150,16 @@ with tempfile.TemporaryDirectory() as tmp:
         download(restored, "large-restored")
         assert digest("large") == digest("large-restored")
         print("4 GiB + 5 bytes survived HTTPS upload, conversion, restore, and download.")
+
+
+    if os.environ.get("LAN_DISPOSABLE_TEST") == "1":
+        # This dedicated CI volume is 12 GiB. Force a reserve above its capacity.
+        subprocess.run(["docker", "compose", "up", "-d", "--force-recreate", "app"],
+                       cwd=compose_dir, env={**os.environ, "RESERVE_BYTES": str(32 << 30)}, check=True)
+        for _ in range(60):
+            try:
+                sign_in()
+                break
+            except (AssertionError, subprocess.CalledProcessError):
+                time.sleep(1)
+        request("/jobs", "-F", "password=test", "-F", "mode=create", "-F", "file:test=@notes", expected=507)

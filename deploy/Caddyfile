@@ -1,5 +1,6 @@
 {
     admin off
+    default_sni {$LAN_HOST}
     auto_https disable_redirects
     skip_install_trust
     servers {

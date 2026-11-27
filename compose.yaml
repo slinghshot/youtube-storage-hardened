@@ -10,6 +10,9 @@ services:
     ulimits:
       core: 0
     pids_limit: 256
+    cpus: 4
+    mem_limit: 2g
+    memswap_limit: 2g
     environment:
       PUBLIC_ORIGIN: https://${LAN_HOST:?set LAN_HOST}:${HTTPS_PORT:-8443}
       JOB_ROOT: /jobs
